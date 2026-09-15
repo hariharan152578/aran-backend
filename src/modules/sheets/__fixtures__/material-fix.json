@@ -1,0 +1,136 @@
+{
+  "startRow": 1,
+  "startCol": 1,
+  "values": [
+    [
+      "Material Consumed for this order",
+      "",
+      ""
+    ],
+    [
+      "EITI",
+      "",
+      ""
+    ],
+    [
+      "S.No",
+      "Description",
+      0
+    ],
+    [
+      1,
+      "60 Casement Fram",
+      ""
+    ],
+    [
+      2,
+      "60 Small Casment Fram",
+      0
+    ],
+    [
+      3,
+      "60 Casment Mullion",
+      ""
+    ],
+    [
+      4,
+      "60 Outward Sash",
+      ""
+    ],
+    [
+      5,
+      "60 Single Galzing Bead",
+      0
+    ],
+    [
+      6,
+      "60 Door Panel",
+      ""
+    ],
+    [
+      7,
+      "60 Casment Door fram A",
+      ""
+    ],
+    [
+      8,
+      "60 Outward Door Sash A",
+      ""
+    ],
+    [
+      9,
+      "60 Sliding Fram",
+      ""
+    ],
+    [
+      10,
+      "60 Small Sliding Sash",
+      ""
+    ],
+    [
+      11,
+      "60 Big Sliding Sash",
+      ""
+    ],
+    [
+      12,
+      "60 Sliding Door Sash",
+      ""
+    ],
+    [
+      13,
+      "Interlockfor 60 Window",
+      ""
+    ],
+    [
+      14,
+      "Interlockfor 60 Door sash B",
+      ""
+    ],
+    [
+      15,
+      "60 Sliding Single Galzing Bead",
+      ""
+    ],
+    [
+      16,
+      "60 Double Galzing Bead",
+      ""
+    ],
+    [
+      17,
+      "60 Sliding Sash Mullion",
+      ""
+    ],
+    [
+      18,
+      "60 Inline Adaptor",
+      ""
+    ],
+    [
+      19,
+      "88 Sliding Fram Mesh",
+      ""
+    ],
+    [
+      20,
+      "80-88 Sliding Insert Screen",
+      ""
+    ],
+    [
+      21,
+      "112 Three Sliding Track Fram",
+      ""
+    ],
+    [
+      22,
+      "Frame Connector",
+      ""
+    ],
+    [
+      23,
+      "Blinds",
+      ""
+    ]
+  ]
+}
