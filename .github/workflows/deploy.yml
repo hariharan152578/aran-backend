@@ -38,10 +38,10 @@ jobs:
 
           echo "=== Restarting PM2 ==="
 
-          sudo -u www pm2 restart src
+          sudo -n -u www /www/server/nodejs/v26.8.2/bin/pm2 restart src
 
           echo "=== PM2 status ==="
 
-          sudo -u www pm2 list
+          sudo -n -u www /www/server/nodejs/v26.8.2/bin/pm2 list
 
           echo "=== Deployment completed ==="
