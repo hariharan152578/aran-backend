@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "seed": "node src/scripts/seed.js",
+    "seed": "node src/scripts/seedUsers.js",
+    "seed:users": "node src/scripts/seedUsers.js",
+    "seed:all": "node src/scripts/seed.js",
     "test": "node --test \"src/**/*.test.js\""
   },
   "engines": {
