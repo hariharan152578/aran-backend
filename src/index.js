@@ -54,7 +54,7 @@ for (const mod of modules) {
 app.get('/api/ping', (req, res) => {
   res.json({
     status: 'healthy',
-    message: 'Aran ERP Server is running! [Auto-Deployed via GitHub Actions v2]',
+    message: 'Aran ERP Server is running! [AUTO DEPLOY TEST 2]',
     timestamp: new Date()
   });
 });
@@ -82,6 +82,6 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
-  console.log(`Aran ERP Backend v2 - Live Auto Deploy Test #2 - port ${PORT}`);
+  console.log(`Aran ERP Backend v2 - AUTO DEPLOY TEST 2 - port ${PORT}`);
 });
 // Trigger nodemon restart comment 2
