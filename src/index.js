@@ -52,7 +52,7 @@ for (const mod of modules) {
 
 // Ping Route
 app.get('/api/ping', (req, res) => {
-  res.json({ message: 'Aran ERP Server is running!', timestamp: new Date() });
+  res.json({ message: 'Aran ERP Server is running! [Auto-Deployed via GitHub Actions]', timestamp: new Date() });
 });
 
 // Socket Connections
@@ -78,6 +78,6 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
-  console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+  console.log(`Aran ERP Backend v2 - Auto Deploy Test - port ${PORT}`);
 });
 // Trigger nodemon restart comment 2

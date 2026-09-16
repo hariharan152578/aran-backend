@@ -1,0 +1,80 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Update source code
+        run: |
+          cd /www/wwwroot/aran-backend
+
+          # Locate jana SSH key
+          SSH_KEY=""
+          if [ -f "$HOME/.ssh/jana" ]; then
+            SSH_KEY="$HOME/.ssh/jana"
+          elif [ -f "/root/.ssh/jana" ]; then
+            SSH_KEY="/root/.ssh/jana"
+          elif [ -f "/etc/ssh/jana" ]; then
+            SSH_KEY="/etc/ssh/jana"
+          else
+            FOUND_KEY=$(find /home /root -name "jana" -type f 2>/dev/null | head -n 1)
+            if [ -n "$FOUND_KEY" ]; then
+              SSH_KEY="$FOUND_KEY"
+            fi
+          fi
+
+          if [ -n "$SSH_KEY" ]; then
+            echo "Using SSH key: $SSH_KEY"
+            chmod 600 "$SSH_KEY" 2>/dev/null || true
+            export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          else
+            echo "Warning: jana SSH key not found in default locations. Using system SSH configuration."
+            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          fi
+
+          # Ensure origin is set to SSH URL
+          git remote set-url origin git@github.com:hariharan152578/aran-backend.git
+
+          # Fetch and reset cleanly
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Install dependencies
+        run: |
+          cd /www/wwwroot/aran-backend
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+          [ -d /www/server/nodejs ] && export PATH="$(find /www/server/nodejs -name "bin" -type d 2>/dev/null | tr '\n' ':')$PATH"
+
+          npm ci || npm install --omit=dev
+
+      - name: Restart PM2 service
+        run: |
+          cd /www/wwwroot/aran-backend
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+          [ -d /www/server/nodejs ] && export PATH="$(find /www/server/nodejs -name "bin" -type d 2>/dev/null | tr '\n' ':')$PATH"
+
+          echo "Restarting backend with PM2..."
+          if sudo -u www pm2 restart src 2>/dev/null; then
+            echo "Successfully restarted PM2 'src' as www user"
+          elif pm2 restart src 2>/dev/null; then
+            echo "Successfully restarted PM2 'src' as current user"
+          elif sudo pm2 restart src 2>/dev/null; then
+            echo "Successfully restarted PM2 'src' as root"
+          else
+            echo "Attempting fallback PM2 restart..."
+            sudo -u www pm2 restart all || pm2 restart all
+          fi
+
+      - name: Verify service status
+        run: |
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+          [ -d /www/server/nodejs ] && export PATH="$(find /www/server/nodejs -name "bin" -type d 2>/dev/null | tr '\n' ':')$PATH"
+
+          sudo -u www pm2 status src || pm2 status src || true
+          echo "Backend deployment finished successfully!"
