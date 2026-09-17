@@ -30,6 +30,12 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
+          echo "=== Ensuring upload directory permissions ==="
+
+          mkdir -p /www/wwwroot/aran-backend/uploads/templates /www/wwwroot/aran-backend/temp_uploads /www/wwwroot/aran-backend/excelfiles
+          sudo chown -R www:www /www/wwwroot/aran-backend/uploads /www/wwwroot/aran-backend/temp_uploads /www/wwwroot/aran-backend/excelfiles || true
+          sudo chmod -R 775 /www/wwwroot/aran-backend/uploads /www/wwwroot/aran-backend/temp_uploads /www/wwwroot/aran-backend/excelfiles || true
+
           echo "=== Installing dependencies ==="
 
           export PATH="/www/server/nodejs/v26.8.2/bin:$PATH"

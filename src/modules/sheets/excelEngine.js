@@ -1,3 +1,4 @@
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import mongoose from 'mongoose';
@@ -10,10 +11,121 @@ import { mapMaterialGrid, mapGlassBlock } from './materialGridMapper.js';
 import { columnToLetter, columnLetterToIndex } from './excelStructureService.js';
 
 export const TEMPLATE_STORAGE_DIR = path.resolve(process.cwd(), 'uploads/templates');
+export const FALLBACK_STORAGE_DIR = path.resolve(os.tmpdir(), 'aran-uploads/templates');
 
-// Ensure directory exists
-if (!fs.existsSync(TEMPLATE_STORAGE_DIR)) {
-  fs.mkdirSync(TEMPLATE_STORAGE_DIR, { recursive: true });
+export function ensureDirectory(dir) {
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o777 });
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[ExcelEngine] Directory warning for ${dir}:`, err.message);
+    return false;
+  }
+}
+
+// Ensure base directories
+ensureDirectory(TEMPLATE_STORAGE_DIR);
+
+/**
+ * Persists an Excel workbook buffer to disk safely, with fallback directories and base64.
+ * Returns { filePath, base64Data }
+ */
+export function persistTemplateWorkbook(templateId, buffer) {
+  const fileName = `${templateId}.xlsx`;
+  const base64Data = buffer ? buffer.toString('base64') : '';
+
+  // 1. Try standard directory (uploads/templates)
+  try {
+    ensureDirectory(TEMPLATE_STORAGE_DIR);
+    const targetPath = path.join(TEMPLATE_STORAGE_DIR, fileName);
+    fs.writeFileSync(targetPath, buffer);
+    return { filePath: `uploads/templates/${fileName}`, base64Data };
+  } catch (err) {
+    console.warn(`[ExcelEngine] Standard storage write failed for ${fileName} (${err.message}). Trying fallback temp directory...`);
+  }
+
+  // 2. Fallback to OS temp directory
+  try {
+    ensureDirectory(FALLBACK_STORAGE_DIR);
+    const fallbackPath = path.join(FALLBACK_STORAGE_DIR, fileName);
+    fs.writeFileSync(fallbackPath, buffer);
+    console.info(`[ExcelEngine] Successfully stored ${fileName} in fallback location: ${fallbackPath}`);
+    return { filePath: fallbackPath, base64Data };
+  } catch (fallbackErr) {
+    console.warn(`[ExcelEngine] Fallback storage write also failed (${fallbackErr.message}). Relying on base64 database backup.`);
+  }
+
+  return { filePath: '', base64Data };
+}
+
+/**
+ * Retrieves the raw workbook Buffer for a template.
+ * Checks disk path first, fallback locations, and base64Data stored in MongoDB.
+ */
+export async function getTemplateBuffer(template) {
+  // 1. Check direct filePath on disk
+  if (template?.excelWorkbook?.filePath) {
+    const directPath = path.isAbsolute(template.excelWorkbook.filePath)
+      ? template.excelWorkbook.filePath
+      : path.resolve(process.cwd(), template.excelWorkbook.filePath);
+    if (fs.existsSync(directPath)) {
+      try {
+        return fs.readFileSync(directPath);
+      } catch (e) {
+        console.warn(`[ExcelEngine] Error reading disk path ${directPath}:`, e.message);
+      }
+    }
+  }
+
+  // 2. Check standard directory by template ID
+  const idStr = String(template?._id || template?.id || '');
+  if (idStr) {
+    const standardPath = path.join(TEMPLATE_STORAGE_DIR, `${idStr}.xlsx`);
+    if (fs.existsSync(standardPath)) {
+      try {
+        return fs.readFileSync(standardPath);
+      } catch (e) {}
+    }
+
+    // Check fallback temp directory
+    const fallbackPath = path.join(FALLBACK_STORAGE_DIR, `${idStr}.xlsx`);
+    if (fs.existsSync(fallbackPath)) {
+      try {
+        return fs.readFileSync(fallbackPath);
+      } catch (e) {}
+    }
+  }
+
+  // 3. Check by code
+  if (template?.code) {
+    const codePath = path.join(TEMPLATE_STORAGE_DIR, `${template.code}.xlsx`);
+    if (fs.existsSync(codePath)) {
+      try {
+        return fs.readFileSync(codePath);
+      } catch (e) {}
+    }
+  }
+
+  // 4. Retrieve from base64Data in MongoDB
+  if (template?.excelWorkbook?.base64Data) {
+    const buf = Buffer.from(template.excelWorkbook.base64Data, 'base64');
+    // Passively attempt to cache to disk if writable
+    try {
+      if (idStr) {
+        const destDir = ensureDirectory(TEMPLATE_STORAGE_DIR) ? TEMPLATE_STORAGE_DIR : FALLBACK_STORAGE_DIR;
+        ensureDirectory(destDir);
+        fs.writeFileSync(path.join(destDir, `${idStr}.xlsx`), buf);
+      }
+    } catch (e) {}
+    return buf;
+  }
+
+  throw Object.assign(
+    new Error(`Excel workbook file not found for template "${template?.name || 'Untitled'}". Please edit the template and re-upload the .xlsx file.`),
+    { status: 404 }
+  );
 }
 
 /**
@@ -69,18 +181,12 @@ export async function runExcelEngine(template, payload = {}) {
     warnings.push(`Skipped ${skipped.length} item(s) with no width/height: ${skipped.join(', ')}.`);
   }
 
-  const filePath = getTemplateFilePath(template);
-  if (!filePath) {
-    throw Object.assign(
-      new Error(`Excel workbook file not found for template "${template.name}". Please re-upload the .xlsx file.`),
-      { status: 404 }
-    );
-  }
-
+  const fileBuffer = await getTemplateBuffer(template);
   const startTime = Date.now();
 
   // Read workbook fresh into memory so calculations never mutate the master template file
-  const wb = XLSX.readFile(filePath, {
+  const wb = XLSX.read(fileBuffer, {
+    type: 'buffer',
     cellFormula: true,
     cellStyles: true,
     cellDates: true,

@@ -17,6 +17,8 @@ pnpm-debug.log*
 # Temporary files & uploads
 temp_uploads/
 excelfiles/
+uploads/templates/*.xlsx
+!uploads/templates/.gitkeep
 
 # OS and IDE files
 .DS_Store

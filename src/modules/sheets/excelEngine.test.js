@@ -144,3 +144,42 @@ test('excelEngine: calculates formulas, cutting sizes and outputs standard contr
   }
 });
 
+test('excelEngine: resilient calculation via base64 when disk file is absent', async () => {
+  const buf = createMockWorkbookBuffer();
+  const testTemplateId = '65f01234567890abcdef0002';
+
+  const mockTemplate = {
+    _id: testTemplateId,
+    name: 'Fixed Window Base64 Test',
+    code: 'EX-FIX-BASE64',
+    templateType: 'EXCEL',
+    googleSheet: {
+      sheetName: 'FIX',
+      materialSheetName: 'Material & Hardware',
+      inputHints: {
+        wNoCol: 'A',
+        widthCol: 'B',
+        heightCol: 'C',
+        headerRow: 5,
+        dataStartRow: 6,
+        dataEndRow: 16
+      }
+    },
+    excelWorkbook: {
+      filePath: 'non_existent_path.xlsx',
+      base64Data: buf.toString('base64')
+    }
+  };
+
+  const payload = {
+    orderNo: 'ORD-BASE64',
+    windows: [{ width: 1000, height: 800 }]
+  };
+
+  const result = await runExcelEngine(mockTemplate, payload);
+  assert.ok(result);
+  assert.equal(result.templateCode, 'EX-FIX-BASE64');
+  assert.ok(result.sheetResult.grid.values.length > 0);
+});
+
+

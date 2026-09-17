@@ -18,7 +18,7 @@ import { summariseStructure, refreshStructure, getStructure } from './structureS
 import { runSheetEngine, recordSheetError } from './sheetEngine.js';
 import { lockStats } from './sheetLock.js';
 import { parseExcelWorkbook, summarizeExcelTabs } from './excelStructureService.js';
-import { runExcelEngine, TEMPLATE_STORAGE_DIR, getTemplateFilePath } from './excelEngine.js';
+import { runExcelEngine, TEMPLATE_STORAGE_DIR, getTemplateFilePath, persistTemplateWorkbook, getTemplateBuffer } from './excelEngine.js';
 import Template from '../configuration/models/Template.js';
 import TemplatePricing from '../configuration/models/TemplatePricing.js';
 import TemplateSheetStructure from '../configuration/models/TemplateSheetStructure.js';
@@ -219,13 +219,11 @@ router.post('/excel/create-template', upload.single('excelFile'), async (req, re
 
     await template.save();
 
-    // Persist workbook file to uploads/templates/<id>.xlsx
-    const storedFileName = `${template._id}.xlsx`;
-    const targetFilePath = path.join(TEMPLATE_STORAGE_DIR, storedFileName);
-    fs.writeFileSync(targetFilePath, req.file.buffer);
+    // Persist workbook file safely (handles Linux permissions, falls back to temp directory + base64)
+    const { filePath, base64Data } = persistTemplateWorkbook(template._id, req.file.buffer);
 
-    // Update relative filePath on template
-    template.excelWorkbook.filePath = `uploads/templates/${storedFileName}`;
+    template.excelWorkbook.filePath = filePath || `uploads/templates/${template._id}.xlsx`;
+    template.excelWorkbook.base64Data = base64Data;
     await template.save();
 
     // Save blueprint to TemplateSheetStructure collection
@@ -293,15 +291,14 @@ router.put('/excel/:id', upload.single('excelFile'), async (req, res) => {
 
     // Handle new workbook file upload if supplied
     if (req.file && req.file.buffer) {
-      const storedFileName = `${template._id}.xlsx`;
-      const targetFilePath = path.join(TEMPLATE_STORAGE_DIR, storedFileName);
-      fs.writeFileSync(targetFilePath, req.file.buffer);
+      const { filePath, base64Data } = persistTemplateWorkbook(template._id, req.file.buffer);
 
       template.excelWorkbook = {
         originalFileName: req.file.originalname,
-        filePath: `uploads/templates/${storedFileName}`,
+        filePath: filePath || `uploads/templates/${template._id}.xlsx`,
         fileSize: req.file.size,
-        uploadedAt: new Date()
+        uploadedAt: new Date(),
+        base64Data
       };
 
       const parsed = parseExcelWorkbook(req.file.buffer);
@@ -372,11 +369,8 @@ router.get('/templates/:id/structure', async (req, res) => {
 
     if (req.query.refresh === '1') {
       if (template.templateType === 'EXCEL') {
-        const filePath = getTemplateFilePath(template);
-        if (!filePath || !fs.existsSync(filePath)) {
-          throw Object.assign(new Error('Template .xlsx file not found on server.'), { status: 404 });
-        }
-        const parsed = parseExcelWorkbook(filePath);
+        const fileBuffer = await getTemplateBuffer(template);
+        const parsed = parseExcelWorkbook(fileBuffer);
         const blueprint = parsed.sheets[template.googleSheet?.sheetName] || null;
         const materialBlueprint = template.googleSheet?.materialSheetName
           ? parsed.sheets[template.googleSheet.materialSheetName] || null

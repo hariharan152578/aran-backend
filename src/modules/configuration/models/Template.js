@@ -23,7 +23,8 @@ const TemplateSchema = new mongoose.Schema({
     originalFileName: { type: String, default: '' },
     filePath: { type: String, default: '' },
     fileSize: { type: Number, default: 0 },
-    uploadedAt: { type: Date, default: null }
+    uploadedAt: { type: Date, default: null },
+    base64Data: { type: String, default: '' }
   },
 
   /**
