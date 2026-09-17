@@ -14,6 +14,7 @@ import mongoose from 'mongoose';
 import Template from '../configuration/models/Template.js';
 import { runProductionEngine } from './evaluator.js';
 import { runSheetEngine } from '../sheets/sheetEngine.js';
+import { runExcelEngine } from '../sheets/excelEngine.js';
 
 /**
  * Resolves a template from an id, a code, a name, or an already-loaded document.
@@ -54,6 +55,10 @@ export async function runEngine(idOrDoc, lineItems, opts = {}) {
 
   if (template?.templateType === 'GOOGLE_SHEET') {
     return runSheetEngine(template, { lineItems, ...opts });
+  }
+
+  if (template?.templateType === 'EXCEL') {
+    return runExcelEngine(template, { lineItems, ...opts });
   }
 
   // Unchanged legacy path. evaluator.js queries its collections by templateId,

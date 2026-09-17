@@ -20,7 +20,7 @@ import { mapMaterialGrid, mapGlassBlock } from './materialGridMapper.js';
  * modal, the order form and the production card modal each use a different one.
  * Same chain the existing UI already tries.
  */
-function pickDimension(measurements, kind) {
+export function pickDimension(measurements, kind) {
   if (!measurements) return null;
   const keys = kind === 'width'
     ? ['widthMM', 'width', 'Width', 'Width (mm)', 'width_mm', 'W']
@@ -71,7 +71,7 @@ export function lineItemsToWindows(lineItems = []) {
  * Accepts either shape the callers use: an explicit windows array (the sheet
  * calculator panel) or ERP line items (simulate / production card generation).
  */
-function resolveWindows({ windows, lineItems }) {
+export function resolveWindows({ windows, lineItems }) {
   if (Array.isArray(windows) && windows.length > 0) {
     const usable = windows
       .map(w => ({ width: Number(w.width), height: Number(w.height), sourceLabel: w.wNo || w.windowNo || null }))

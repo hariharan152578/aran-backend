@@ -10,13 +10,24 @@
 
 import express from 'express';
 import mongoose from 'mongoose';
+import multer from 'multer';
+import fs from 'node:fs';
+import path from 'node:path';
 import { AppsScriptError, fetchStructure } from './appsScriptClient.js';
 import { summariseStructure, refreshStructure, getStructure } from './structureService.js';
 import { runSheetEngine, recordSheetError } from './sheetEngine.js';
 import { lockStats } from './sheetLock.js';
+import { parseExcelWorkbook, summarizeExcelTabs } from './excelStructureService.js';
+import { runExcelEngine, TEMPLATE_STORAGE_DIR, getTemplateFilePath } from './excelEngine.js';
 import Template from '../configuration/models/Template.js';
+import TemplatePricing from '../configuration/models/TemplatePricing.js';
+import TemplateSheetStructure from '../configuration/models/TemplateSheetStructure.js';
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024 }
+});
 
 /**
  * Every failure in this module answers with the same envelope so the frontend
@@ -32,6 +43,18 @@ export function sendError(res, err) {
     ok: false,
     error: { kind: err.kind || 'SERVER', message: err.message || 'Unexpected error', status, snippet: null }
   });
+}
+
+export function normalizeHints(h) {
+  if (!h || typeof h !== 'object') return null;
+  return {
+    wNoCol: h.wNoCol ?? h.w_no_col ?? null,
+    widthCol: h.widthCol ?? h.width_col ?? null,
+    heightCol: h.heightCol ?? h.height_col ?? null,
+    headerRow: h.headerRow ?? h.header_row ?? null,
+    dataStartRow: h.dataStartRow ?? h.data_start_row ?? null,
+    dataEndRow: h.dataEndRow ?? h.data_end_row ?? null
+  };
 }
 
 router.get('/', (req, res) => {
@@ -77,27 +100,262 @@ router.post('/verify', async (req, res) => {
 });
 
 /**
+ * POST /api/sheets/excel/inspect
+ *
+ * Inspects a directly uploaded .xlsx file.
+ * Returns tab summary, input column hints, and full sheet blueprints for instant preview.
+ */
+router.post('/excel/inspect', upload.single('excelFile'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ ok: false, error: { message: 'No Excel (.xlsx) file was uploaded.' } });
+    }
+
+    const startTime = Date.now();
+    const parsed = parseExcelWorkbook(req.file.buffer);
+    const summary = summarizeExcelTabs(parsed.sheets);
+    const durationMs = Date.now() - startTime;
+
+    res.json({
+      ok: true,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      durationMs,
+      tabs: summary.tabs,
+      suggested: summary.suggested,
+      sheets: parsed.sheets,
+      calculableCount: summary.tabs.filter(t => t.calculable).length
+    });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * POST /api/sheets/excel/create-template
+ *
+ * Creates a template backed directly by an uploaded .xlsx file.
+ * Completely bypasses Google Sheets and Apps Script.
+ */
+router.post('/excel/create-template', upload.single('excelFile'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ ok: false, error: { message: 'No Excel file uploaded.' } });
+    }
+
+    const {
+      name, productName, description = '',
+      categoryId, subcategoryId, folderId,
+      sheetName, materialSheetName = '',
+      inputHints: rawHints,
+      defaultPrintPages: rawPages,
+      customCellStyles: rawStyles
+    } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ ok: false, error: { message: 'Template name is required.' } });
+    }
+    if (!categoryId) {
+      return res.status(400).json({ ok: false, error: { message: 'Category is required.' } });
+    }
+    if (!sheetName) {
+      return res.status(400).json({ ok: false, error: { message: 'Calculation sheet tab is required.' } });
+    }
+
+    const inputHints = typeof rawHints === 'string' ? JSON.parse(rawHints) : (rawHints || null);
+    const defaultPrintPages = typeof rawPages === 'string' ? JSON.parse(rawPages) : (rawPages || []);
+    const customCellStyles = typeof rawStyles === 'string' ? JSON.parse(rawStyles) : (rawStyles || {});
+
+    // Generate unique code EX-{NAME}-{TAB}
+    const sanitize = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const baseCode = `EX-${sanitize(name)}-${sanitize(sheetName)}`.slice(0, 40);
+    let code = baseCode;
+    let suffix = 2;
+    while (await Template.findOne({ code })) {
+      code = `${baseCode}-${suffix++}`;
+    }
+
+    // Parse sheets blueprint from uploaded buffer
+    const parsed = parseExcelWorkbook(req.file.buffer);
+    const blueprint = parsed.sheets[sheetName] || null;
+    const materialBlueprint = materialSheetName ? (parsed.sheets[materialSheetName] || null) : null;
+
+    if (!blueprint) {
+      return res.status(422).json({
+        ok: false,
+        error: { message: `Selected calculation tab "${sheetName}" does not exist in workbook.` }
+      });
+    }
+
+    const normalizedHints = normalizeHints(inputHints) || normalizeHints(blueprint.input_field_hints);
+
+    // Prepare template document
+    const template = new Template({
+      name: name.trim(),
+      productName: (productName || name).trim(),
+      code,
+      description,
+      categoryId,
+      subcategoryId: subcategoryId || null,
+      folderId: folderId || null,
+      templateType: 'EXCEL',
+      status: 'VALIDATED',
+      excelWorkbook: {
+        originalFileName: req.file.originalname,
+        fileSize: req.file.size,
+        uploadedAt: new Date()
+      },
+      googleSheet: {
+        webAppUrl: 'LOCAL_EXCEL',
+        sheetName,
+        materialSheetName: materialSheetName || '',
+        verifiedAt: new Date(),
+        verifiedTabs: parsed.sheetNames,
+        ...(normalizedHints ? { inputHints: normalizedHints } : {}),
+        ...(Array.isArray(defaultPrintPages) && defaultPrintPages.length > 0 ? { defaultPrintPages } : {}),
+        ...(customCellStyles && Object.keys(customCellStyles).length > 0 ? { customCellStyles } : {})
+      }
+    });
+
+    await template.save();
+
+    // Persist workbook file to uploads/templates/<id>.xlsx
+    const storedFileName = `${template._id}.xlsx`;
+    const targetFilePath = path.join(TEMPLATE_STORAGE_DIR, storedFileName);
+    fs.writeFileSync(targetFilePath, req.file.buffer);
+
+    // Update relative filePath on template
+    template.excelWorkbook.filePath = `uploads/templates/${storedFileName}`;
+    await template.save();
+
+    // Save blueprint to TemplateSheetStructure collection
+    const byteSize = Buffer.byteLength(JSON.stringify({ blueprint, materialBlueprint }));
+    await TemplateSheetStructure.findOneAndUpdate(
+      { templateId: template._id },
+      {
+        $set: {
+          templateId: template._id,
+          webAppUrl: 'LOCAL_EXCEL',
+          sheetName,
+          blueprint,
+          materialSheetName: materialSheetName || '',
+          materialBlueprint,
+          fetchedAt: new Date(),
+          byteSize
+        }
+      },
+      { new: true, upsert: true }
+    );
+
+    // Initialize pricing record
+    await new TemplatePricing({ templateId: template._id }).save().catch(() => {});
+
+    res.status(201).json({
+      ok: true,
+      template,
+      warnings: []
+    });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * PUT /api/sheets/excel/:id
+ *
+ * Updates an EXCEL template, with optional replacement of the .xlsx workbook file.
+ */
+router.put('/excel/:id', upload.single('excelFile'), async (req, res) => {
+  try {
+    const template = await resolveSheetTemplate(req.params.id);
+    const {
+      name, productName, description,
+      sheetName, materialSheetName,
+      inputHints: rawHints,
+      defaultPrintPages: rawPages,
+      customCellStyles: rawStyles
+    } = req.body;
+
+    if (name) template.name = name.trim();
+    if (productName) template.productName = productName.trim();
+    if (description !== undefined) template.description = description;
+
+    const inputHints = typeof rawHints === 'string' ? JSON.parse(rawHints) : rawHints;
+    const defaultPrintPages = typeof rawPages === 'string' ? JSON.parse(rawPages) : rawPages;
+    const customCellStyles = typeof rawStyles === 'string' ? JSON.parse(rawStyles) : rawStyles;
+
+    const normalizedHints = normalizeHints(inputHints);
+    if (normalizedHints) template.googleSheet.inputHints = normalizedHints;
+    if (Array.isArray(defaultPrintPages)) template.googleSheet.defaultPrintPages = defaultPrintPages;
+    if (customCellStyles) template.googleSheet.customCellStyles = customCellStyles;
+    if (sheetName) template.googleSheet.sheetName = sheetName;
+    if (materialSheetName !== undefined) template.googleSheet.materialSheetName = materialSheetName;
+
+    // Handle new workbook file upload if supplied
+    if (req.file && req.file.buffer) {
+      const storedFileName = `${template._id}.xlsx`;
+      const targetFilePath = path.join(TEMPLATE_STORAGE_DIR, storedFileName);
+      fs.writeFileSync(targetFilePath, req.file.buffer);
+
+      template.excelWorkbook = {
+        originalFileName: req.file.originalname,
+        filePath: `uploads/templates/${storedFileName}`,
+        fileSize: req.file.size,
+        uploadedAt: new Date()
+      };
+
+      const parsed = parseExcelWorkbook(req.file.buffer);
+      const blueprint = parsed.sheets[template.googleSheet.sheetName] || null;
+      const materialBlueprint = template.googleSheet.materialSheetName
+        ? (parsed.sheets[template.googleSheet.materialSheetName] || null)
+        : null;
+
+      const byteSize = Buffer.byteLength(JSON.stringify({ blueprint, materialBlueprint }));
+      await TemplateSheetStructure.findOneAndUpdate(
+        { templateId: template._id },
+        {
+          $set: {
+            templateId: template._id,
+            webAppUrl: 'LOCAL_EXCEL',
+            sheetName: template.googleSheet.sheetName,
+            blueprint,
+            materialSheetName: template.googleSheet.materialSheetName || '',
+            materialBlueprint,
+            fetchedAt: new Date(),
+            byteSize
+          }
+        },
+        { new: true, upsert: true }
+      );
+    }
+
+    await template.save();
+    res.json({ ok: true, template });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
  * POST /api/sheets/templates/:id/calculate
  *   Body: { orderNo?, windows:[{width,height}] }
  *      OR { orderNo?, lineItems:[{qty,measurements}] }
  *
  * Accepts both call shapes so the sheet calculator panel (explicit windows) and
  * the ERP flows (line items) can share the same endpoint.
- *
- * On success returns the full sheetResult + the standard engine contract.
- * On failure records the error on the template (for the Overview panel) before
- * forwarding.
+ * Dispatches to runExcelEngine for EXCEL templates, or runSheetEngine for GOOGLE_SHEET.
  */
 router.post('/templates/:id/calculate', async (req, res) => {
   try {
     const template = await resolveSheetTemplate(req.params.id);
     const { orderNo, windows, lineItems } = req.body || {};
 
-    const result = await runSheetEngine(template, { orderNo, windows, lineItems });
+    const result = template.templateType === 'EXCEL'
+      ? await runExcelEngine(template, { orderNo, windows, lineItems })
+      : await runSheetEngine(template, { orderNo, windows, lineItems });
+
     res.json({ ok: true, ...result });
   } catch (err) {
-    // Persist the error message so the template Overview panel can surface it
-    // without requiring another calculation attempt.
     try { await recordSheetError(req.params.id, err.message); } catch {}
     sendError(res, err);
   }
@@ -106,19 +364,45 @@ router.post('/templates/:id/calculate', async (req, res) => {
 /**
  * GET /api/sheets/templates/:id/structure?refresh=1
  *
- * Returns the cached blueprint. With ?refresh=1 it re-fetches from the Apps
- * Script web app first, which is the "Refresh structure" button's action.
- *
- * The blueprint is intentionally not returned on every GET /templates/:id
- * because it is large (~22KB+) and the listing endpoints must stay fast.
+ * Returns the cached blueprint. With ?refresh=1 it re-fetches or re-parses from disk.
  */
 router.get('/templates/:id/structure', async (req, res) => {
   try {
     const template = await resolveSheetTemplate(req.params.id);
 
     if (req.query.refresh === '1') {
-      const { doc, warnings, tabsFound } = await refreshStructure(template);
-      return res.json({ ok: true, structure: doc, warnings, tabsFound });
+      if (template.templateType === 'EXCEL') {
+        const filePath = getTemplateFilePath(template);
+        if (!filePath || !fs.existsSync(filePath)) {
+          throw Object.assign(new Error('Template .xlsx file not found on server.'), { status: 404 });
+        }
+        const parsed = parseExcelWorkbook(filePath);
+        const blueprint = parsed.sheets[template.googleSheet?.sheetName] || null;
+        const materialBlueprint = template.googleSheet?.materialSheetName
+          ? parsed.sheets[template.googleSheet.materialSheetName] || null
+          : null;
+        const byteSize = Buffer.byteLength(JSON.stringify({ blueprint, materialBlueprint }));
+        const doc = await TemplateSheetStructure.findOneAndUpdate(
+          { templateId: template._id },
+          {
+            $set: {
+              templateId: template._id,
+              webAppUrl: 'LOCAL_EXCEL',
+              sheetName: template.googleSheet?.sheetName,
+              blueprint,
+              materialSheetName: template.googleSheet?.materialSheetName || '',
+              materialBlueprint,
+              fetchedAt: new Date(),
+              byteSize
+            }
+          },
+          { new: true, upsert: true }
+        );
+        return res.json({ ok: true, structure: doc, warnings: [], tabsFound: parsed.sheetNames });
+      } else {
+        const { doc, warnings, tabsFound } = await refreshStructure(template);
+        return res.json({ ok: true, structure: doc, warnings, tabsFound });
+      }
     }
 
     const cached = await getStructure(template._id);
@@ -205,9 +489,9 @@ async function resolveSheetTemplate(idParam) {
   if (!template) {
     throw Object.assign(new Error('Template not found.'), { status: 404, kind: 'NOT_FOUND' });
   }
-  if (template.templateType !== 'GOOGLE_SHEET') {
+  if (template.templateType !== 'GOOGLE_SHEET' && template.templateType !== 'EXCEL') {
     throw Object.assign(
-      new Error(`Template "${template.name}" is type ${template.templateType}, not GOOGLE_SHEET.`),
+      new Error(`Template "${template.name}" is type ${template.templateType}, not GOOGLE_SHEET or EXCEL.`),
       { status: 422, kind: 'WRONG_TYPE' }
     );
   }

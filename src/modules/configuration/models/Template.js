@@ -12,8 +12,19 @@ const TemplateSchema = new mongoose.Schema({
   thumbnail: { type: String, default: '' },
   analysisReport: { type: Object, default: null },
   structuralHash: { type: String, default: null },
-  templateType: { type: String, enum: ['JSON_RULES', 'REACT_COMPONENT', 'GOOGLE_SHEET'], default: 'JSON_RULES' },
+  templateType: { type: String, enum: ['JSON_RULES', 'REACT_COMPONENT', 'GOOGLE_SHEET', 'EXCEL'], default: 'JSON_RULES' },
   reactCode: { type: String, default: '' },
+
+  /**
+   * Direct Excel workbook metadata when templateType === 'EXCEL'.
+   * Allows uploading .xlsx files directly into the system, bypassing Google Sheets.
+   */
+  excelWorkbook: {
+    originalFileName: { type: String, default: '' },
+    filePath: { type: String, default: '' },
+    fileSize: { type: Number, default: 0 },
+    uploadedAt: { type: Date, default: null }
+  },
 
   /**
    * Binding to a Google Apps Script Web App that fronts a real spreadsheet.
