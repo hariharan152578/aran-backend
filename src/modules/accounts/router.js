@@ -7,30 +7,9 @@ import Quotation from '../sales/models/Quotation.js';
 
 const router = express.Router();
 
-// Helper to seed initial invoices from orders
-const ensureInvoices = async () => {
-  const invoiceCount = await Invoice.countDocuments();
-  if (invoiceCount === 0) {
-    const orders = await Order.find();
-    for (const order of orders) {
-      const count = await Invoice.countDocuments();
-      const invoiceNumber = `INV-2026-${String(count + 1).padStart(3, '0')}`;
-      const inv = new Invoice({
-        invoiceNumber,
-        orderId: order._id,
-        customerName: order.customerName,
-        amount: 15000, // mock calculation
-        dueDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000) // 15 days from now
-      });
-      await inv.save();
-    }
-  }
-};
-
 // INVOICES
 router.get('/invoices', async (req, res) => {
   try {
-    await ensureInvoices();
     const invoices = await Invoice.find().populate('orderId').populate('quotationId').sort({ createdAt: -1 });
 
     const enriched = await Promise.all(invoices.map(async (inv) => {
