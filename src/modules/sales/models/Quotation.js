@@ -20,6 +20,31 @@ const QuotationSchema = new mongoose.Schema({
     customFields: { type: mongoose.Schema.Types.Mixed } // User inputs for dynamic category custom columns
   }],
   
+  profile: { type: String, default: '' },
+  
+  extraCharges: {
+    packingForwarding: {
+      qty: { type: Number, default: 0 },
+      rate: { type: Number, default: 0 },
+      amount: { type: Number, default: 0 }
+    },
+    erectionScrew: {
+      qty: { type: Number, default: 0 },
+      rate: { type: Number, default: 0 },
+      amount: { type: Number, default: 0 }
+    },
+    foam: {
+      qty: { type: Number, default: 0 },
+      rate: { type: Number, default: 0 },
+      amount: { type: Number, default: 0 }
+    },
+    silicon: {
+      qty: { type: Number, default: 0 },
+      rate: { type: Number, default: 0 },
+      amount: { type: Number, default: 0 }
+    }
+  },
+
   additionalCharges: [{
     label: { type: String },
     amount: { type: Number }
@@ -30,10 +55,16 @@ const QuotationSchema = new mongoose.Schema({
     amount: { type: Number }
   }],
   
+  discountPercent: { type: Number, default: 0 },
+  discountAmount: { type: Number, default: 0 },
+  subtotal: { type: Number, default: 0 },
+  totalSqFt: { type: Number, default: 0 },
+  totalQty: { type: Number, default: 0 },
   autoRound: { type: Boolean, default: false },
   amountReceived: { type: Number, default: 0 },
   paymentMode: { type: String },
   notes: { type: String },
+  paymentTerms: { type: String, default: '1. Payment Terms : 60% Advance, Balance : 40% @ time of dispatch' },
   
   totalAmount: { type: Number, default: 0 }, // final calculated total
   orderRef: { type: String }
