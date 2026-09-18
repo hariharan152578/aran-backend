@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Vehicle from './models/Vehicle.js';
 import Courier from './models/Courier.js';
 import DispatchOrder from './models/DispatchOrder.js';
+import DismissedDispatch from './models/DismissedDispatch.js';
 import Order from '../sales/models/Order.js';
 import WarrantyCard from '../service/models/WarrantyCard.js';
 import InstallationOrder from '../installation/models/InstallationOrder.js';
@@ -10,16 +11,22 @@ import ProductionCard from '../production/models/ProductionCard.js';
 
 const router = express.Router();
 
-
-
 // Sync completed production cards into dispatch orders
 const syncCompletedProductionCards = async () => {
   try {
-    // Clean up temporary placeholder entries so they can rebuild with correct names
-    await DispatchOrder.deleteMany({ customerName: 'Customer Ref' });
+    const dismissedList = await DismissedDispatch.find().lean().catch(() => []);
+    const dismissedSet = new Set(dismissedList.map(d => String(d.batchId)));
 
-    const completedCards = await ProductionCard.find({ status: 'Completed' });
+    const completedCards = await ProductionCard.find({ 
+      status: 'Completed',
+      dispatchDismissed: { $ne: true }
+    });
+
     for (const card of completedCards) {
+      const cardIdStr = String(card._id);
+      if (dismissedSet.has(cardIdStr) || (card.id && dismissedSet.has(String(card.id)))) {
+        continue; // Batch was explicitly deleted by user from dispatch. Do not recreate!
+      }
       // Clean orderId
       let orderId = 'custom';
       if (card.orderId) {
@@ -331,12 +338,88 @@ router.put('/orders/:id', async (req, res) => {
   }
 });
 
-// Delete Dispatch Order
+// Bulk Delete Dispatch Orders
+router.delete('/orders', async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    let dispatchesToDelete = [];
+    if (Array.isArray(ids) && ids.length > 0) {
+      dispatchesToDelete = await DispatchOrder.find({
+        $or: [{ _id: { $in: ids } }, { dispatchNumber: { $in: ids } }]
+      });
+    } else {
+      dispatchesToDelete = await DispatchOrder.find();
+    }
+
+    for (const disp of dispatchesToDelete) {
+      if (disp.batchId) {
+        const batchStr = String(disp.batchId);
+        await DismissedDispatch.findOneAndUpdate(
+          { batchId: batchStr },
+          { batchId: batchStr, orderId: String(disp.orderId || ''), dispatchNumber: disp.dispatchNumber },
+          { upsert: true }
+        ).catch(() => {});
+
+        try {
+          const bQuery = mongoose.Types.ObjectId.isValid(disp.batchId)
+            ? { $or: [{ _id: disp.batchId }, { id: disp.batchId }] }
+            : { id: disp.batchId };
+          await ProductionCard.updateMany(bQuery, { $set: { dispatchDismissed: true } });
+        } catch (e) {}
+      }
+    }
+
+    if (Array.isArray(ids) && ids.length > 0) {
+      await DispatchOrder.deleteMany({
+        $or: [{ _id: { $in: ids } }, { dispatchNumber: { $in: ids } }]
+      });
+    } else {
+      await DispatchOrder.deleteMany({});
+    }
+
+    res.json({ success: true, count: dispatchesToDelete.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete single Dispatch Order
 router.delete('/orders/:id', async (req, res) => {
   try {
-    const dispatch = await DispatchOrder.findByIdAndDelete(req.params.id);
+    const { id } = req.params;
+    let dispatch = null;
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      dispatch = await DispatchOrder.findById(id);
+    }
+    if (!dispatch) {
+      dispatch = await DispatchOrder.findOne({
+        $or: [{ _id: id }, { dispatchNumber: id }, { batchNumber: id }]
+      });
+    }
+
     if (!dispatch) return res.status(404).json({ error: 'Dispatch order not found' });
-    res.json({ success: true });
+
+    // Mark linked batch as dismissed so syncCompletedProductionCards never resurrects it
+    if (dispatch.batchId) {
+      const batchStr = String(dispatch.batchId);
+      await DismissedDispatch.findOneAndUpdate(
+        { batchId: batchStr },
+        { batchId: batchStr, orderId: String(dispatch.orderId || ''), dispatchNumber: dispatch.dispatchNumber },
+        { upsert: true }
+      ).catch(() => {});
+
+      try {
+        const bQuery = mongoose.Types.ObjectId.isValid(dispatch.batchId)
+          ? { $or: [{ _id: dispatch.batchId }, { id: dispatch.batchId }] }
+          : { id: dispatch.batchId };
+        await ProductionCard.updateMany(bQuery, { $set: { dispatchDismissed: true } });
+      } catch (e) {
+        console.warn('Failed to mark card as dispatchDismissed:', e.message);
+      }
+    }
+
+    await DispatchOrder.findByIdAndDelete(dispatch._id);
+    res.json({ success: true, message: 'Dispatch order deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
