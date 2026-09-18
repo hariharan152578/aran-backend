@@ -420,6 +420,60 @@ router.get('/orders/:id', async (req, res) => {
   }
 });
 
+router.put('/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = mongoose.Types.ObjectId.isValid(id)
+      ? { $or: [{ _id: id }, { id }, { orderNumber: id }] }
+      : { $or: [{ id }, { orderNumber: id }] };
+
+    const order = await Order.findOneAndUpdate(query, { $set: req.body }, { new: true });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    res.json(order);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update order', details: err.message });
+  }
+});
+
+router.patch('/orders/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: 'Status is required' });
+
+    const query = mongoose.Types.ObjectId.isValid(id)
+      ? { $or: [{ _id: id }, { id }, { orderNumber: id }] }
+      : { $or: [{ id }, { orderNumber: id }] };
+
+    const order = await Order.findOneAndUpdate(query, { $set: { status } }, { new: true });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Synchronize status with any associated production cards
+    try {
+      const ProductionCard = mongoose.models.ProductionCard || mongoose.model('ProductionCard');
+      if (ProductionCard) {
+        const cardStatus = (status === 'Dispatched') ? 'Completed' : status;
+        await ProductionCard.updateMany(
+          {
+            $or: [
+              { orderId: order._id },
+              { orderId: order.id },
+              { orderId: order.orderNumber }
+            ]
+          },
+          { $set: { status: cardStatus } }
+        );
+      }
+    } catch (cardErr) {
+      console.warn('Could not sync card status:', cardErr.message);
+    }
+
+    res.json(order);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update order status', details: err.message });
+  }
+});
+
 router.put('/orders/:id/payment', async (req, res) => {
   try {
     const { amount, paymentMode, paymentStatus } = req.body;

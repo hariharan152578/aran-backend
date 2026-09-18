@@ -11,7 +11,7 @@ const ProductionCardSchema = new mongoose.Schema({
   productionDate: { type: Date },
   status: { 
     type: String, 
-    enum: ['Created', 'Verification Pending', 'Proceed for Production', 'Start', 'Completed'], 
+    enum: ['Created', 'Processing', 'Verification Pending', 'Proceed for Production', 'Start', 'In Production', 'Completed', 'Dispatched', 'Cancelled'], 
     default: 'Created' 
   },
   qty: { type: Number, default: 1 },

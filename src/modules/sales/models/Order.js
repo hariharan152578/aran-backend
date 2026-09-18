@@ -20,8 +20,11 @@ const OrderSchema = new mongoose.Schema({
     date: { type: Date, default: Date.now },
     reference: { type: String }
   }],
-  status: { type: String, enum: ['Processing', 'In Production', 'Completed', 'Dispatched', 'Cancelled'], default: 'Processing' },
-  
+  status: { 
+    type: String, 
+    enum: ['Processing', 'In Production', 'Verification Pending', 'Proceed for Production', 'Start', 'Completed', 'Dispatched', 'Cancelled', 'Created'], 
+    default: 'Processing' 
+  },
   lineItems: [{
     templateId: { type: String },
     templateCode: { type: String },

@@ -503,10 +503,58 @@ router.put('/cards/:id', async (req, res) => {
     );
     if (!card) return res.status(404).json({ error: 'Card not found' });
     
+    if (updateFields.status && card.orderId) {
+      try {
+        const orderIdKey = typeof card.orderId === 'object' ? (card.orderId._id || card.orderId.id) : card.orderId;
+        if (orderIdKey) {
+          const query = mongoose.Types.ObjectId.isValid(orderIdKey)
+            ? { $or: [{ _id: orderIdKey }, { id: orderIdKey }, { orderNumber: orderIdKey }] }
+            : { $or: [{ id: orderIdKey }, { orderNumber: orderIdKey }] };
+          await Order.findOneAndUpdate(query, { $set: { status: updateFields.status } });
+        }
+      } catch (ordErr) {
+        console.warn('Could not sync order status from card update:', ordErr.message);
+      }
+    }
+
     const populatedCard = await populateCard(card);
     res.json(populatedCard);
   } catch (error) {
     console.error('Error updating production card:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.patch('/cards/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: 'Status is required' });
+
+    const card = await ProductionCard.findByIdAndUpdate(
+      req.params.id,
+      { $set: { status } },
+      { new: true }
+    );
+    if (!card) return res.status(404).json({ error: 'Card not found' });
+
+    if (card.orderId) {
+      try {
+        const orderIdKey = typeof card.orderId === 'object' ? (card.orderId._id || card.orderId.id) : card.orderId;
+        if (orderIdKey) {
+          const query = mongoose.Types.ObjectId.isValid(orderIdKey)
+            ? { $or: [{ _id: orderIdKey }, { id: orderIdKey }, { orderNumber: orderIdKey }] }
+            : { $or: [{ id: orderIdKey }, { orderNumber: orderIdKey }] };
+          await Order.findOneAndUpdate(query, { $set: { status } });
+        }
+      } catch (ordErr) {
+        console.warn('Could not sync order status from card update:', ordErr.message);
+      }
+    }
+
+    const populatedCard = await populateCard(card);
+    res.json(populatedCard);
+  } catch (error) {
+    console.error('Error updating production card status:', error);
     res.status(500).json({ error: error.message });
   }
 });
