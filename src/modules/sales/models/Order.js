@@ -1,7 +1,12 @@
 import mongoose from 'mongoose';
 
 const OrderSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true }, // Replaces orderNumber to match frontend id mapping
+  id: { type: String, required: true, unique: true }, // e.g. "Set 1 - A001" or "A001"
+  orderNumber: { type: String }, // e.g. "A001"
+  setNumber: { type: Number, default: 1, index: true }, // e.g. 1
+  setLabel: { type: String, default: 'Set 1' }, // e.g. "Set 1"
+  series: { type: String, default: 'A', index: true }, // e.g. "A" (A-Z)
+  sequenceNumber: { type: Number, default: 1, index: true }, // e.g. 1 (1-999)
   quotationRef: { type: String },
   date: { type: String }, // Frontend usually stores locale string
   party: { type: mongoose.Schema.Types.Mixed }, // Matches Quotation

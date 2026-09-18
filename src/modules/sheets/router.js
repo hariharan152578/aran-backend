@@ -285,7 +285,11 @@ router.put('/excel/:id', upload.single('excelFile'), async (req, res) => {
     const normalizedHints = normalizeHints(inputHints);
     if (normalizedHints) template.googleSheet.inputHints = normalizedHints;
     if (Array.isArray(defaultPrintPages)) template.googleSheet.defaultPrintPages = defaultPrintPages;
-    if (customCellStyles) template.googleSheet.customCellStyles = customCellStyles;
+    if (customCellStyles !== undefined) {
+      template.googleSheet.customCellStyles = customCellStyles;
+      template.markModified('googleSheet.customCellStyles');
+      template.markModified('googleSheet');
+    }
     if (sheetName) template.googleSheet.sheetName = sheetName;
     if (materialSheetName !== undefined) template.googleSheet.materialSheetName = materialSheetName;
 
@@ -392,10 +396,10 @@ router.get('/templates/:id/structure', async (req, res) => {
           },
           { new: true, upsert: true }
         );
-        return res.json({ ok: true, structure: doc, warnings: [], tabsFound: parsed.sheetNames });
+        return res.json({ ok: true, structure: doc, warnings: [], tabsFound: parsed.sheetNames, customCellStyles: template.googleSheet?.customCellStyles || {} });
       } else {
         const { doc, warnings, tabsFound } = await refreshStructure(template);
-        return res.json({ ok: true, structure: doc, warnings, tabsFound });
+        return res.json({ ok: true, structure: doc, warnings, tabsFound, customCellStyles: template.googleSheet?.customCellStyles || {} });
       }
     }
 
@@ -406,7 +410,7 @@ router.get('/templates/:id/structure', async (req, res) => {
         error: { kind: 'NOT_CACHED', message: 'No cached structure for this template. Click "Refresh structure" to fetch it.', status: 404, snippet: null }
       });
     }
-    res.json({ ok: true, structure: cached });
+    res.json({ ok: true, structure: cached, customCellStyles: template.googleSheet?.customCellStyles || {} });
   } catch (err) {
     sendError(res, err);
   }

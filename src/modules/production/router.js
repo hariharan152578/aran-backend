@@ -100,30 +100,48 @@ const populateCard = async (card) => {
 
   // Populate templateId
   if (card.templateId) {
-    if (typeof card.templateId === 'object' && card.templateId !== null) {
+    const rawTemplateId = (typeof card.templateId === 'object' && card.templateId !== null)
+      ? (card.templateId._id || card.templateId.id)
+      : card.templateId;
+
+    let templateDoc = null;
+    if (rawTemplateId && mongoose.Types.ObjectId.isValid(rawTemplateId)) {
+      try {
+        templateDoc = await Template.findById(rawTemplateId).lean();
+      } catch (err) {}
+    } else if (typeof rawTemplateId === 'string' && rawTemplateId.length > 0) {
+      try {
+        templateDoc = await Template.findOne({ $or: [{ code: rawTemplateId }, { name: rawTemplateId }] }).lean();
+      } catch (err) {}
+    }
+
+    if (templateDoc) {
       cardObj.templateId = {
+        ...templateDoc,
+        _id: extractIdString(templateDoc._id),
+        name: templateDoc.name,
+        code: templateDoc.code,
+        googleSheet: templateDoc.googleSheet || null
+      };
+      if (templateDoc.googleSheet?.defaultPrintPages && templateDoc.googleSheet.defaultPrintPages.length > 0) {
+        cardObj.defaultPrintPages = templateDoc.googleSheet.defaultPrintPages;
+      }
+      if (templateDoc.googleSheet?.customCellStyles) {
+        cardObj.customCellStyles = templateDoc.googleSheet.customCellStyles;
+      }
+    } else if (typeof card.templateId === 'object' && card.templateId !== null) {
+      cardObj.templateId = {
+        ...card.templateId,
         _id: extractIdString(card.templateId),
         name: card.templateId.name || card.templateName || 'Local Template',
-        code: String(card.templateId.code || card.templateId.name || extractIdString(card.templateId) || 'STD-TWIN')
+        code: String(card.templateId.code || card.templateId.name || extractIdString(card.templateId) || 'STD-TWIN'),
+        googleSheet: card.templateId.googleSheet || null
       };
-    } else if (mongoose.Types.ObjectId.isValid(card.templateId)) {
-      try {
-        const templateDoc = await Template.findById(card.templateId);
-        if (templateDoc) {
-          cardObj.templateId = templateDoc;
-        } else {
-          cardObj.templateId = {
-            _id: extractIdString(card.templateId),
-            name: card.templateName || 'Local Template',
-            code: String(card.templateId)
-          };
-        }
-      } catch (err) {
-        cardObj.templateId = {
-          _id: extractIdString(card.templateId),
-          name: card.templateName || 'Local Template',
-          code: String(card.templateId)
-        };
+      if (card.templateId.googleSheet?.defaultPrintPages && card.templateId.googleSheet.defaultPrintPages.length > 0) {
+        cardObj.defaultPrintPages = card.templateId.googleSheet.defaultPrintPages;
+      }
+      if (card.templateId.googleSheet?.customCellStyles) {
+        cardObj.customCellStyles = card.templateId.googleSheet.customCellStyles;
       }
     } else {
       cardObj.templateId = {
@@ -131,6 +149,22 @@ const populateCard = async (card) => {
         name: card.templateName || 'Local Template',
         code: String(card.templateId)
       };
+    }
+  }
+
+  // Fallback if defaultPrintPages is still not set on cardObj
+  if (!cardObj.defaultPrintPages || cardObj.defaultPrintPages.length === 0) {
+    const fallbackTemplateRef = card.templateCode || card.templateName || card.measurements?.groups?.[0]?.templateCode || card.measurements?.groups?.[0]?.templateName;
+    if (fallbackTemplateRef) {
+      try {
+        const tDoc = await Template.findOne({ $or: [{ code: fallbackTemplateRef }, { name: fallbackTemplateRef }] }).lean();
+        if (tDoc?.googleSheet?.defaultPrintPages && tDoc.googleSheet.defaultPrintPages.length > 0) {
+          cardObj.defaultPrintPages = tDoc.googleSheet.defaultPrintPages;
+          if (tDoc.googleSheet?.customCellStyles) {
+            cardObj.customCellStyles = tDoc.googleSheet.customCellStyles;
+          }
+        }
+      } catch (err) {}
     }
   }
 
