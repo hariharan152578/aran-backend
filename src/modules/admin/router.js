@@ -4,17 +4,7 @@ import AuditLog from './models/AuditLog.js';
 
 const router = express.Router();
 
-// Helper to seed initial audit logs
-const ensureAuditLogs = async () => {
-  const count = await AuditLog.countDocuments();
-  if (count === 0) {
-    await AuditLog.insertMany([
-      { action: 'Login', module: 'Auth', user: 'admin', details: 'Successful administrator login' },
-      { action: 'Template Created', module: 'Configuration', user: 'admin', details: 'Seeded system twin template' },
-      { action: 'Database Seeded', module: 'System', user: 'admin', details: 'Initial database rule engine structures seeded' }
-    ]);
-  }
-};
+
 
 // USERS
 router.get('/users', async (req, res) => {
@@ -39,7 +29,6 @@ router.post('/users', async (req, res) => {
 // AUDIT LOGS
 router.get('/audit-logs', async (req, res) => {
   try {
-    await ensureAuditLogs();
     const data = await AuditLog.find().sort({ createdAt: -1 });
     res.json(data);
   } catch (err) {

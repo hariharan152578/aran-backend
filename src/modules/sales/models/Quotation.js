@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const QuotationSchema = new mongoose.Schema({
-  quotationNumber: { type: String, required: true, unique: true }, // e.g. QT-2026-001
+  quotationNumber: { type: String, required: true, unique: true }, // e.g. Q-0926-001
   date: { type: Date, default: Date.now },
   party: { type: mongoose.Schema.Types.Mixed }, // Customer details
   deliveryAddress: { type: String },

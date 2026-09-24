@@ -14,16 +14,7 @@ router.get('/list', async (req, res) => {
     const templatesColl = mongoose.connection.db.collection('templates');
     const templates = await templatesColl.find({}).sort({ uploadDate: -1 }).toArray();
     
-    // Seed initial templates if empty
-    if (templates.length === 0) {
-      const mockTemplates = [
-        { name: 'FIX.xlsx', version: 'v1.0.0', configuration: 'FIX', filename: 'FIX.xlsx', size: '24 KB', uploadDate: new Date(Date.now() - 86400000 * 3) },
-        { name: 'SL-SL.xlsx', version: 'v1.2.0', configuration: 'SL-SL', filename: 'SL-SL.xlsx', size: '32 KB', uploadDate: new Date(Date.now() - 86400000 * 2) },
-        { name: 'OP-OP-OP.xlsx', version: 'v1.1.0', configuration: 'OP-OP-OP', filename: 'OP-OP-OP.xlsx', size: '48 KB', uploadDate: new Date(Date.now() - 86400000) }
-      ];
-      await templatesColl.insertMany(mockTemplates);
-      return res.json(mockTemplates);
-    }
+
 
     res.json(templates);
   } catch (error) {

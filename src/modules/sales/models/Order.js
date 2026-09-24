@@ -36,7 +36,13 @@ const OrderSchema = new mongoose.Schema({
     tax: { type: Number, default: 18 },
     measurements: { type: mongoose.Schema.Types.Mixed },
     dynamicData: { type: mongoose.Schema.Types.Mixed }
-  }]
+  }],
+  extraCharges: { type: mongoose.Schema.Types.Mixed },
+  additionalCharges: [{ label: { type: String }, amount: { type: Number } }],
+  discounts: [{ label: { type: String }, amount: { type: Number } }],
+  subtotal: { type: Number, default: 0 },
+  totalSqFt: { type: Number, default: 0 },
+  totalQty: { type: Number, default: 0 }
 }, { timestamps: true });
 
 export default mongoose.model('Order', OrderSchema);

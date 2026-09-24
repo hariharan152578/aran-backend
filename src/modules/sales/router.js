@@ -7,6 +7,9 @@ import Category from '../configuration/models/Category.js';
 import QuotationCategory from './models/QuotationCategory.js';
 import Invoice from '../accounts/models/Invoice.js';
 import Payment from '../accounts/models/Payment.js';
+import QuotationSettings from './models/QuotationSettings.js';
+import ProductionCard from '../production/models/ProductionCard.js';
+import DispatchOrder from '../dispatch/models/DispatchOrder.js';
 
 const router = express.Router();
 
@@ -551,14 +554,37 @@ router.put('/orders/:id/payment', async (req, res) => {
         await invoice.save();
       }
 
-      // Record a Payment receipt document linked to the matching invoice
-      const pmtCount = await Payment.countDocuments();
-      const receiptNumber = `RCPT-2026-${String(pmtCount + 1).padStart(3, '0')}`;
+      // Record a Payment receipt document linked to the matching invoice & order
+      const allPmts = await Payment.find({}, { paymentNumber: 1, receiptNumber: 1 });
+      let maxNum = 35620;
+      for (const p of allPmts) {
+        const val = parseInt(p.paymentNumber || p.receiptNumber, 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+      const paymentNumber = String(maxNum + 1);
+
       const payment = new Payment({
-        receiptNumber,
+        paymentNumber,
+        receiptNumber: paymentNumber,
+        partyName: customerName,
         invoiceId: invoice._id,
+        settledInvoices: [{
+          invoiceId: invoice._id,
+          orderId: order._id,
+          invoiceNumber: invoice.invoiceNumber,
+          orderNumber: order.id || order.orderNumber,
+          invoiceAmount: orderTotalAmt,
+          amountReceived: numAmount,
+          discount: 0,
+          date: new Date(),
+          type: 'Order'
+        }],
+        totalAmountSettled: numAmount,
+        amountReceived: numAmount,
         amountPaid: numAmount,
         paymentMethod: paymentMode || 'Cash',
+        paymentMode: paymentMode || 'Cash',
+        paymentReceivedIn: (paymentMode || '').toLowerCase() === 'cash' ? 'Cash in hand' : 'Bank',
         paymentDate: new Date()
       });
       await payment.save();
@@ -593,12 +619,45 @@ router.get('/quotations', async (req, res) => {
   }
 });
 
+const generateNextQuotationNumber = async (quoteDate) => {
+  const d = quoteDate ? new Date(quoteDate) : new Date();
+  const validDate = isNaN(d.getTime()) ? new Date() : d;
+  const mm = String(validDate.getMonth() + 1).padStart(2, '0');
+  const yy = String(validDate.getFullYear()).slice(-2);
+  const prefix = `Q-${mm}${yy}-`;
+
+  const regex = new RegExp(`^Q-${mm}${yy}-(\\d+)`, 'i');
+  const quotes = await Quotation.find({ quotationNumber: regex }, { quotationNumber: 1 });
+
+  let maxSeq = 0;
+  for (const q of quotes) {
+    const match = q.quotationNumber.match(regex);
+    if (match && match[1]) {
+      const seq = parseInt(match[1], 10);
+      if (!isNaN(seq) && seq > maxSeq) {
+        maxSeq = seq;
+      }
+    }
+  }
+
+  return `${prefix}${String(maxSeq + 1).padStart(3, '0')}`;
+};
+
+router.get('/next-quotation-number', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const nextQuotationNumber = await generateNextQuotationNumber(date);
+    res.json({ nextQuotationNumber });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate next quotation number', details: err.message });
+  }
+});
+
 router.post('/quotations', async (req, res) => {
   try {
     let quotationNumber = req.body.quotationNumber;
-    if (!quotationNumber || quotationNumber === 'New Draft') {
-      const count = await Quotation.countDocuments();
-      quotationNumber = `QT-2026-${String(count + 1).padStart(3, '0')}`;
+    if (!quotationNumber || quotationNumber === 'New Draft' || !quotationNumber.trim()) {
+      quotationNumber = await generateNextQuotationNumber(req.body.date);
     }
     const data = { ...req.body, quotationNumber };
     const quotation = new Quotation(data);
@@ -611,11 +670,191 @@ router.post('/quotations', async (req, res) => {
 
 router.put('/quotations/:id', async (req, res) => {
   try {
+    const oldQuotation = await Quotation.findById(req.params.id);
     const quotation = await Quotation.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!quotation) return res.status(404).json({ error: 'Quotation not found' });
+
+    // Cascading updates to linked Orders, Invoices, Payments, and ProductionCards
+    try {
+      const quotationAmount = Number(quotation.totalAmount || quotation.amount || 0);
+      const customerName = typeof quotation.party === 'string'
+        ? quotation.party
+        : (quotation.party?.name || 'Customer');
+
+      // 1. Find and update linked Orders
+      const orderQueryOr = [];
+      if (oldQuotation?.quotationNumber) {
+        orderQueryOr.push({ quotationRef: oldQuotation.quotationNumber });
+      }
+      if (quotation.quotationNumber) {
+        orderQueryOr.push({ quotationRef: quotation.quotationNumber });
+      }
+      if (quotation._id) {
+        orderQueryOr.push({ quotationRef: String(quotation._id) });
+      }
+      if (oldQuotation?._id) {
+        orderQueryOr.push({ quotationRef: String(oldQuotation._id) });
+      }
+      if (quotation.orderRef) {
+        orderQueryOr.push({ id: quotation.orderRef });
+        orderQueryOr.push({ orderNumber: quotation.orderRef });
+        const escapedRef = quotation.orderRef.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        orderQueryOr.push({ id: new RegExp(`\\b${escapedRef}\\b`, 'i') });
+      }
+      if (oldQuotation?.orderRef) {
+        orderQueryOr.push({ id: oldQuotation.orderRef });
+        orderQueryOr.push({ orderNumber: oldQuotation.orderRef });
+      }
+
+      let linkedOrders = [];
+      if (orderQueryOr.length > 0) {
+        linkedOrders = await Order.find({ $or: orderQueryOr });
+      }
+
+      const orderIds = [];
+      const orderKeyIds = [];
+
+      for (const order of linkedOrders) {
+        orderIds.push(order._id);
+        if (order.id) orderKeyIds.push(order.id);
+        if (order.orderNumber) orderKeyIds.push(order.orderNumber);
+
+        // Keep quotationRef synced with the current quotationNumber
+        if (quotation.quotationNumber) {
+          order.quotationRef = quotation.quotationNumber;
+        }
+
+        // Update party, amounts, line items, and accessory charges
+        order.party = quotation.party;
+        order.amount = quotationAmount;
+        order.totalAmount = quotationAmount;
+        if (quotation.lineItems && quotation.lineItems.length > 0) {
+          order.lineItems = quotation.lineItems;
+        }
+        if (quotation.extraCharges) {
+          order.extraCharges = quotation.extraCharges;
+        }
+        if (quotation.additionalCharges) {
+          order.additionalCharges = quotation.additionalCharges;
+        }
+        if (quotation.discounts) {
+          order.discounts = quotation.discounts;
+        }
+        if (quotation.subtotal != null) {
+          order.subtotal = quotation.subtotal;
+        }
+        if (quotation.totalSqFt != null) {
+          order.totalSqFt = quotation.totalSqFt;
+        }
+        if (quotation.totalQty != null) {
+          order.totalQty = quotation.totalQty;
+        }
+
+        // Recalculate payment status on the order
+        const paid = Number(order.amountPaid || 0);
+        if (paid >= quotationAmount && quotationAmount > 0) {
+          order.paymentStatus = 'Paid';
+        } else if (paid > 0) {
+          order.paymentStatus = 'Partial Paid';
+        } else {
+          order.paymentStatus = 'Unpaid';
+        }
+
+        await order.save();
+      }
+
+      // 2. Find and update linked Invoices
+      const invoiceQueryOr = [
+        { quotationId: quotation._id }
+      ];
+      if (orderIds.length > 0) {
+        invoiceQueryOr.push({ orderId: { $in: orderIds } });
+      }
+      if (quotation.orderRef) {
+        invoiceQueryOr.push({ orderRef: quotation.orderRef });
+      }
+      for (const k of orderKeyIds) {
+        invoiceQueryOr.push({ orderRef: k });
+      }
+
+      const linkedInvoices = await Invoice.find({ $or: invoiceQueryOr });
+
+      for (const inv of linkedInvoices) {
+        inv.customerName = customerName;
+        inv.amount = quotationAmount;
+        if (!inv.orderRef && quotation.orderRef) {
+          inv.orderRef = quotation.orderRef;
+        }
+
+        const rec = Number(inv.amountReceived || 0);
+        if (rec >= quotationAmount && quotationAmount > 0) {
+          inv.status = 'Paid';
+        } else if (rec > 0) {
+          inv.status = 'Partially Paid';
+        } else {
+          inv.status = 'Unpaid';
+        }
+
+        await inv.save();
+
+        // 3. Cascade update settled invoice lines in Payment records
+        try {
+          await Payment.updateMany(
+            {
+              $or: [
+                { invoiceId: inv._id },
+                { 'settledInvoices.invoiceId': inv._id }
+              ]
+            },
+            {
+              $set: {
+                partyName: customerName,
+                'settledInvoices.$[elem].invoiceAmount': quotationAmount
+              }
+            },
+            {
+              arrayFilters: [{ 'elem.invoiceId': inv._id }]
+            }
+          );
+        } catch (pmtErr) {
+          console.warn('Failed to cascade payment update for invoice:', pmtErr.message);
+        }
+      }
+
+      // 4. Update linked ProductionCards
+      const allOrderIdentifiers = [...orderIds, ...orderKeyIds, ...orderIds.map(String)];
+      if (allOrderIdentifiers.length > 0) {
+        try {
+          await ProductionCard.updateMany(
+            { orderId: { $in: allOrderIdentifiers } },
+            { $set: { customerName } }
+          );
+        } catch (cardErr) {
+          console.warn('Failed to cascade ProductionCard customerName:', cardErr.message);
+        }
+
+        // 5. Update linked DispatchOrders
+        try {
+          await DispatchOrder.updateMany(
+            { orderId: { $in: allOrderIdentifiers } },
+            {
+              $set: {
+                customerName,
+                ...(quotation.deliveryAddress ? { deliveryAddress: quotation.deliveryAddress } : {})
+              }
+            }
+          );
+        } catch (dispErr) {
+          console.warn('Failed to cascade DispatchOrder details:', dispErr.message);
+        }
+      }
+    } catch (syncErr) {
+      console.error('Error synchronizing quotation updates to linked entities:', syncErr);
+    }
+
     res.json(quotation);
   } catch (err) {
-    res.status(400).json({ error: 'Failed to update quotation' });
+    res.status(400).json({ error: 'Failed to update quotation', details: err.message });
   }
 });
 
@@ -625,6 +864,61 @@ router.delete('/quotations/:id', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete quotation' });
+  }
+});
+
+// ================= Accessory Defaults =================
+
+router.get('/accessory-defaults', async (req, res) => {
+  try {
+    let settings = await QuotationSettings.findOne({ key: 'default_accessories' });
+    if (!settings) {
+      settings = {
+        packingForwarding: { qty: 0, rate: 0, amount: 0 },
+        erectionScrew: { qty: 0, rate: 0, amount: 0 },
+        foam: { qty: 0, rate: 0, amount: 0 },
+        silicon: { qty: 0, rate: 0, amount: 0 }
+      };
+    }
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch accessory defaults', details: err.message });
+  }
+});
+
+router.post('/accessory-defaults', async (req, res) => {
+  try {
+    const { packingForwarding, erectionScrew, foam, silicon } = req.body;
+    const settings = await QuotationSettings.findOneAndUpdate(
+      { key: 'default_accessories' },
+      {
+        key: 'default_accessories',
+        packingForwarding: {
+          qty: Number(packingForwarding?.qty) || 0,
+          rate: Number(packingForwarding?.rate) || 0,
+          amount: Number(packingForwarding?.amount) || 0
+        },
+        erectionScrew: {
+          qty: Number(erectionScrew?.qty) || 0,
+          rate: Number(erectionScrew?.rate) || 0,
+          amount: Number(erectionScrew?.amount) || 0
+        },
+        foam: {
+          qty: Number(foam?.qty) || 0,
+          rate: Number(foam?.rate) || 0,
+          amount: Number(foam?.amount) || 0
+        },
+        silicon: {
+          qty: Number(silicon?.qty) || 0,
+          rate: Number(silicon?.rate) || 0,
+          amount: Number(silicon?.amount) || 0
+        }
+      },
+      { upsert: true, new: true }
+    );
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save accessory defaults', details: err.message });
   }
 });
 
