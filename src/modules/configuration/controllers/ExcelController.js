@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import Template from '../models/Template.js';
 import TemplateMeasurement from '../models/TemplateMeasurement.js';
 import TemplateFormula from '../models/TemplateFormula.js';
@@ -336,24 +338,36 @@ export const downloadOriginalExcel = async (req, res) => {
 
     const originalName = `${template.name}.xlsx`;
 
-    const tempDir = './node_modules/.temp_uploads';
-    if (!fs.existsSync(tempDir)) {
-      return res.status(404).json({ message: 'Upload directory not found' });
+    const candidateDirs = [
+      path.resolve(process.cwd(), 'temp_uploads'),
+      path.resolve(process.cwd(), 'node_modules/.temp_uploads'),
+      os.tmpdir()
+    ];
+    let matchingFiles = [];
+    let foundDir = null;
+
+    for (const dir of candidateDirs) {
+      if (fs.existsSync(dir)) {
+        try {
+          const files = fs.readdirSync(dir);
+          const matches = files.filter(f => f.endsWith(`-${originalName}`) || f.endsWith(originalName));
+          if (matches.length > 0) {
+            matchingFiles = matches;
+            foundDir = dir;
+            break;
+          }
+        } catch (e) {}
+      }
     }
 
-    const files = fs.readdirSync(tempDir);
-    // Find files matching the originalName (they have timestamp prefix)
-    const matchingFiles = files.filter(f => f.endsWith(`-${originalName}`) || f.endsWith(originalName));
-    
-    if (matchingFiles.length === 0) {
+    if (!foundDir || matchingFiles.length === 0) {
       return res.status(404).json({ message: 'Original file is no longer available on the server' });
     }
 
-    // Get the most recent one (assuming lexicographical sort by timestamp is enough, or we can just parse it)
     matchingFiles.sort();
     const targetFile = matchingFiles[matchingFiles.length - 1];
     
-    const filePath = `${tempDir}/${targetFile}`;
+    const filePath = path.join(foundDir, targetFile);
     res.download(filePath, originalName);
   } catch (error) {
     res.status(500).json({ message: error.message });

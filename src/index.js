@@ -33,6 +33,7 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/auth', authRoutes);
 
 // Register manufacturing modules dynamically
 const modules = [
@@ -46,16 +47,18 @@ for (const mod of modules) {
   try {
     const { default: router } = await import(`./modules/${mod}/router.js`);
     app.use(`/api/${mod}`, router);
+    app.use(`/${mod}`, router);
+    console.log(`[MODULE] Loaded /api/${mod} and /${mod}`);
   } catch (err) {
-    console.warn(`[WARN] Skipping module ${mod} - Router not found.`);
+    console.error(`[ERROR] Failed to load module ${mod}:`, err);
   }
 }
 
 // Ping Route
-app.get('/api/ping', (req, res) => {
+app.get(['/api/ping', '/ping'], (req, res) => {
   res.json({
     status: 'healthy',
-    message: 'Aran ERP Server is running! [AUTO DEPLOY TEST 2]',
+    message: 'Aran ERP Server is running!',
     timestamp: new Date()
   });
 });

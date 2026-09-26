@@ -14,6 +14,7 @@ import { exec } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const execPromise = util.promisify(exec);
@@ -40,11 +41,12 @@ export const processExcelToTemplate = async (filePath, originalName) => {
 
   // Run the external Python Excel reverse engineering parser
   const pythonScriptPath = path.resolve(__dirname, '../../../../xlsx_to_json.py');
-  const tempJsonPath = path.resolve(__dirname, `../../../../node_modules/.temp_uploads/${Date.now()}-extracted.json`);
-  
-  if (!fs.existsSync(path.dirname(tempJsonPath))) {
-    fs.mkdirSync(path.dirname(tempJsonPath), { recursive: true });
+  const tempUploadsDir = path.resolve(process.cwd(), 'temp_uploads');
+  if (!fs.existsSync(tempUploadsDir)) {
+    try { fs.mkdirSync(tempUploadsDir, { recursive: true, mode: 0o777 }); } catch (e) {}
   }
+  const extractionDir = fs.existsSync(tempUploadsDir) ? tempUploadsDir : os.tmpdir();
+  const tempJsonPath = path.resolve(extractionDir, `${Date.now()}-extracted.json`);
 
   const pythonCmd = `python "${pythonScriptPath}" "${filePath}" "${tempJsonPath}" --mode smart`;
   console.log(`Executing Python extraction: ${pythonCmd}`);
