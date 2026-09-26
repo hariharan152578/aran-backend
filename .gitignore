@@ -19,6 +19,9 @@ temp_uploads/
 excelfiles/
 uploads/templates/*.xlsx
 !uploads/templates/.gitkeep
+backups/
+backup_settings.json
+
 
 # OS and IDE files
 .DS_Store

@@ -14,7 +14,7 @@ const DispatchOrderSchema = new mongoose.Schema({
   batchNumber: { type: String },
   templateName: { type: String },
   qty: { type: Number },
-  status: { type: String, enum: ['Not Reached', 'Reached', 'Processing', 'Dispatched', 'Delivered'], default: 'Not Reached' }
+  status: { type: String, enum: ['Not Reached', 'Reached', 'Processing', 'Ready', 'Ready for Dispatch', 'Dispatched', 'In Transit', 'Delivered'], default: 'Ready' }
 }, { timestamps: true });
 
 export default mongoose.model('DispatchOrder', DispatchOrderSchema);

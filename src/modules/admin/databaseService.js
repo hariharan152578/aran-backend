@@ -1,16 +1,42 @@
 import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import AuditLog from './models/AuditLog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const BACKUPS_DIR = path.resolve(__dirname, '../../../backups');
+const DEFAULT_BACKUPS_DIR = path.resolve(__dirname, '../../../backups');
+const SETTINGS_FILE = path.resolve(__dirname, '../../../backup_settings.json');
 
-// Ensure backups directory exists
-if (!fs.existsSync(BACKUPS_DIR)) {
-  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+// Helper to get active backup directory
+function getBackupsDirectory() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+      if (data && data.backupDirectory && typeof data.backupDirectory === 'string') {
+        const customDir = path.resolve(data.backupDirectory);
+        if (!fs.existsSync(customDir)) {
+          fs.mkdirSync(customDir, { recursive: true });
+        }
+        return customDir;
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading backup_settings.json:', err.message);
+  }
+
+  if (!fs.existsSync(DEFAULT_BACKUPS_DIR)) {
+    fs.mkdirSync(DEFAULT_BACKUPS_DIR, { recursive: true });
+  }
+  return DEFAULT_BACKUPS_DIR;
+}
+
+// Ensure default backups directory exists
+if (!fs.existsSync(DEFAULT_BACKUPS_DIR)) {
+  fs.mkdirSync(DEFAULT_BACKUPS_DIR, { recursive: true });
 }
 
 // Collection classification dictionary
@@ -30,7 +56,10 @@ const KNOWN_COLLECTIONS = {
   grns: { displayName: 'Goods Receipt Notes (GRN)', schema: 'GRN', module: 'Inventory & Procurement', severity: 'OPERATIONAL DATA' },
   stockitems: { displayName: 'Stock Items', schema: 'StockItem', module: 'Inventory & Procurement', severity: 'OPERATIONAL DATA' },
   inventoryadjustments: { displayName: 'Inventory Adjustments', schema: 'InventoryAdjustment', module: 'Inventory & Procurement', severity: 'OPERATIONAL DATA' },
-  expenses: { displayName: 'Direct Expenses', schema: 'Expense', module: 'Accounts & Finance', severity: 'OPERATIONAL DATA' },
+  accounts: { displayName: 'Bank & Cash Accounts', schema: 'Account', module: 'Accounts & Ledger', severity: 'CRITICAL MASTER' },
+  accounttransactions: { displayName: 'Account Ledger Transactions', schema: 'AccountTransaction', module: 'Accounts & Ledger', severity: 'OPERATIONAL DATA' },
+  account_transactions: { displayName: 'Account Ledger Transactions', schema: 'AccountTransaction', module: 'Accounts & Ledger', severity: 'OPERATIONAL DATA' },
+  expenses: { displayName: 'Direct Expenses', schema: 'Expense', module: 'Accounts & Ledger', severity: 'OPERATIONAL DATA' },
   customers: { displayName: 'Customers Registry', schema: 'Customer', module: 'CRM & Parties', severity: 'CRITICAL MASTER' },
   suppliers: { displayName: 'Suppliers Registry', schema: 'Supplier', module: 'CRM & Parties', severity: 'CRITICAL MASTER' },
   partycategories: { displayName: 'Party Categories', schema: 'PartyCategory', module: 'CRM & Parties', severity: 'CRITICAL MASTER' },
@@ -106,6 +135,8 @@ const TRANSACTIONAL_COLLECTIONS = [
   'grns',
   'inventoryadjustments',
   'expenses',
+  'accounttransactions',
+  'account_transactions',
   'dispatchorders',
   'installationorders',
   'productioncards',
@@ -504,13 +535,91 @@ export class DatabaseService {
   }
 
   /**
+   * Get backup directory configuration and system preset paths
+   */
+  static getBackupDirectoryInfo() {
+    const current = getBackupsDirectory();
+    const home = os.homedir();
+    return {
+      currentDirectory: current,
+      defaultDirectory: DEFAULT_BACKUPS_DIR,
+      systemPresets: [
+        { label: 'Default App Backups', path: DEFAULT_BACKUPS_DIR },
+        { label: 'My Documents', path: path.join(home, 'Documents', 'Aran_Backups') },
+        { label: 'Desktop', path: path.join(home, 'Desktop', 'Aran_Backups') },
+        { label: 'Downloads', path: path.join(home, 'Downloads', 'Aran_Backups') }
+      ]
+    };
+  }
+
+  /**
+   * Set custom backup directory
+   */
+  static async setBackupDirectory(targetDir, user = 'admin') {
+    if (!targetDir || typeof targetDir !== 'string') {
+      throw new Error('Please provide a valid directory path');
+    }
+    const resolved = path.resolve(targetDir.trim());
+    if (!fs.existsSync(resolved)) {
+      fs.mkdirSync(resolved, { recursive: true });
+    }
+
+    // Verify write permissions
+    const testFile = path.join(resolved, `.test_write_${Date.now()}`);
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({
+      backupDirectory: resolved,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user
+    }, null, 2), 'utf-8');
+
+    await AuditLog.create({
+      action: 'Backup Storage Location Updated',
+      module: 'Database Administration',
+      user,
+      details: `Changed backup directory to '${resolved}'`
+    });
+
+    return {
+      success: true,
+      currentDirectory: resolved,
+      message: `Backup storage location set to: ${resolved}`
+    };
+  }
+
+  /**
+   * Open the active backup folder in OS file manager (Windows File Explorer, etc.)
+   */
+  static openBackupFolderInExplorer(customDir = null) {
+    const dir = customDir ? path.resolve(customDir) : getBackupsDirectory();
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    if (process.platform === 'win32') {
+      exec(`explorer "${dir}"`);
+    } else if (process.platform === 'darwin') {
+      exec(`open "${dir}"`);
+    } else {
+      exec(`xdg-open "${dir}"`);
+    }
+    return { success: true, openedDirectory: dir };
+  }
+
+  /**
    * Save a backup snapshot to the local server's backups directory
    */
-  static async saveServerBackup(user = 'admin', prefix = 'backup') {
+  static async saveServerBackup(user = 'admin', prefix = 'backup', customDir = null) {
+    const targetDir = customDir ? path.resolve(customDir) : getBackupsDirectory();
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
     const dump = await this.createBackupDump();
     const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `${prefix}_${timestampStr}.json`;
-    const filepath = path.join(BACKUPS_DIR, filename);
+    const filepath = path.join(targetDir, filename);
 
     const jsonStr = JSON.stringify(dump, null, 2);
     fs.writeFileSync(filepath, jsonStr, 'utf-8');
@@ -521,11 +630,13 @@ export class DatabaseService {
       action: 'Server Backup Created',
       module: 'Database Administration',
       user,
-      details: `Generated server snapshot '${filename}' (${(stats.size / 1024).toFixed(2)} KB)`
+      details: `Generated snapshot '${filename}' in '${targetDir}' (${(stats.size / 1024).toFixed(2)} KB)`
     });
 
     return {
       filename,
+      filepath,
+      directory: targetDir,
       sizeBytes: stats.size,
       formattedSize: `${(stats.size / 1024).toFixed(2)} KB`,
       createdAt: stats.birthtime || stats.mtime
@@ -535,21 +646,24 @@ export class DatabaseService {
   /**
    * List all server backup files
    */
-  static async listServerBackups() {
-    if (!fs.existsSync(BACKUPS_DIR)) {
+  static async listServerBackups(customDir = null) {
+    const targetDir = customDir ? path.resolve(customDir) : getBackupsDirectory();
+    if (!fs.existsSync(targetDir)) {
       return [];
     }
 
-    const files = fs.readdirSync(BACKUPS_DIR);
+    const files = fs.readdirSync(targetDir);
     const backups = [];
 
     for (const file of files) {
       if (file.endsWith('.json')) {
-        const filepath = path.join(BACKUPS_DIR, file);
+        const filepath = path.join(targetDir, file);
         try {
           const stats = fs.statSync(filepath);
           backups.push({
             filename: file,
+            filepath,
+            directory: targetDir,
             sizeBytes: stats.size,
             formattedSize: `${(stats.size / 1024).toFixed(2)} KB`,
             createdAt: stats.birthtime || stats.mtime
@@ -560,6 +674,29 @@ export class DatabaseService {
       }
     }
 
+    // If target directory is different from DEFAULT_BACKUPS_DIR, also list from default if present
+    if (targetDir !== DEFAULT_BACKUPS_DIR && fs.existsSync(DEFAULT_BACKUPS_DIR)) {
+      try {
+        const defaultFiles = fs.readdirSync(DEFAULT_BACKUPS_DIR);
+        for (const file of defaultFiles) {
+          if (file.endsWith('.json') && !backups.some(b => b.filename === file)) {
+            const filepath = path.join(DEFAULT_BACKUPS_DIR, file);
+            try {
+              const stats = fs.statSync(filepath);
+              backups.push({
+                filename: file,
+                filepath,
+                directory: DEFAULT_BACKUPS_DIR,
+                sizeBytes: stats.size,
+                formattedSize: `${(stats.size / 1024).toFixed(2)} KB`,
+                createdAt: stats.birthtime || stats.mtime
+              });
+            } catch (err) {}
+          }
+        }
+      } catch (err) {}
+    }
+
     // Sort newest first
     backups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     return backups;
@@ -568,20 +705,25 @@ export class DatabaseService {
   /**
    * Get absolute filepath for a server backup
    */
-  static getServerBackupFilePath(filename) {
+  static getServerBackupFilePath(filename, customDir = null) {
+    const targetDir = customDir ? path.resolve(customDir) : getBackupsDirectory();
     const sanitized = path.basename(filename);
-    const filepath = path.join(BACKUPS_DIR, sanitized);
-    if (!fs.existsSync(filepath)) {
-      throw new Error(`Backup file '${filename}' not found on server`);
+    const filepath = path.join(targetDir, sanitized);
+    if (fs.existsSync(filepath)) {
+      return filepath;
     }
-    return filepath;
+    const defaultFilepath = path.join(DEFAULT_BACKUPS_DIR, sanitized);
+    if (fs.existsSync(defaultFilepath)) {
+      return defaultFilepath;
+    }
+    throw new Error(`Backup file '${filename}' not found in '${targetDir}'`);
   }
 
   /**
    * Delete a server backup file
    */
-  static async deleteServerBackup(filename, user = 'admin') {
-    const filepath = this.getServerBackupFilePath(filename);
+  static async deleteServerBackup(filename, user = 'admin', customDir = null) {
+    const filepath = this.getServerBackupFilePath(filename, customDir);
     fs.unlinkSync(filepath);
 
     await AuditLog.create({

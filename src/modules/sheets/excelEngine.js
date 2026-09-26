@@ -122,6 +122,37 @@ export async function getTemplateBuffer(template) {
     return buf;
   }
 
+  // 5. Fallback search in TEMPLATE_STORAGE_DIR (e.g. after mongorestore when ObjectId changed)
+  try {
+    if (fs.existsSync(TEMPLATE_STORAGE_DIR)) {
+      const files = fs.readdirSync(TEMPLATE_STORAGE_DIR).filter(f => f.endsWith('.xlsx'));
+      const targetSheet = template?.googleSheet?.sheetName;
+      for (const f of files) {
+        const full = path.join(TEMPLATE_STORAGE_DIR, f);
+        try {
+          const stat = fs.statSync(full);
+          if (template?.excelWorkbook?.fileSize && stat.size === template.excelWorkbook.fileSize) {
+            const buf = fs.readFileSync(full);
+            if (idStr) {
+              try { fs.writeFileSync(path.join(TEMPLATE_STORAGE_DIR, `${idStr}.xlsx`), buf); } catch {}
+            }
+            return buf;
+          }
+          if (targetSheet) {
+            const probeWb = XLSX.readFile(full, { bookSheets: true });
+            if (probeWb.SheetNames?.includes(targetSheet)) {
+              const buf = fs.readFileSync(full);
+              if (idStr) {
+                try { fs.writeFileSync(path.join(TEMPLATE_STORAGE_DIR, `${idStr}.xlsx`), buf); } catch {}
+              }
+              return buf;
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
   throw Object.assign(
     new Error(`Excel workbook file not found for template "${template?.name || 'Untitled'}". Please edit the template and re-upload the .xlsx file.`),
     { status: 404 }
@@ -282,11 +313,25 @@ export async function runExcelEngine(template, payload = {}) {
     }
   });
 
+  // Optional order date
+  const rawDate = payload.orderDate || payload.date;
+  const dateStr = rawDate
+    ? (typeof rawDate === 'string' && rawDate.includes('T') ? rawDate.split('T')[0] : String(rawDate))
+    : new Date().toISOString().split('T')[0];
+
+  const dateCellMatch = findDateCell(ws);
+  if (dateCellMatch) {
+    if (ws[dateCellMatch]) {
+      delete ws[dateCellMatch].f;
+    }
+    ws[dateCellMatch] = { t: 's', v: dateStr, w: dateStr };
+  }
+
   // Optional order number
   const orderNo = payload.orderNo || 'ORD-SIM';
   const orderCellMatch = findOrderNoCell(ws);
   if (orderCellMatch) {
-    ws[orderCellMatch] = { t: 's', v: String(orderNo) };
+    ws[orderCellMatch] = { t: 's', v: String(orderNo), w: String(orderNo) };
   }
 
   // In-memory formula calculation across all sheets
@@ -294,6 +339,25 @@ export async function runExcelEngine(template, payload = {}) {
     formula(wb);
   } catch (calcErr) {
     warnings.push(`Formula evaluation notice: ${calcErr.message}`);
+  }
+
+  // Sanitize formula outputs (xlsx-calc leaves t=undefined or v as Date object)
+  for (const addr in ws) {
+    if (addr.startsWith('!')) continue;
+    const cell = ws[addr];
+    if (cell) {
+      if (cell.v instanceof Date) {
+        cell.t = 's';
+        cell.v = cell.v.toISOString().split('T')[0];
+        cell.w = cell.v;
+      } else if (cell.t === undefined && cell.v !== undefined && cell.v !== null) {
+        cell.t = typeof cell.v === 'number' ? 'n' : 's';
+        if (typeof cell.v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(cell.v)) {
+          cell.v = cell.v.split('T')[0];
+          cell.w = cell.v;
+        }
+      }
+    }
   }
 
   // Read calculation grid
@@ -390,6 +454,37 @@ export async function runExcelEngine(template, payload = {}) {
   }
 
   return resultData;
+}
+
+/**
+ * Searches for a "Date" label cell or TODAY() formula cell and returns the cell address to write the order date.
+ */
+function findDateCell(ws) {
+  // 1. Look for a cell whose formula is TODAY()
+  for (const addr in ws) {
+    if (addr.startsWith('!')) continue;
+    const cell = ws[addr];
+    if (cell && typeof cell.f === 'string' && /^today\(\s*\)$/i.test(cell.f.trim())) {
+      return addr;
+    }
+  }
+
+  // 2. Look for a cell whose value is "DATE" or "ORDER DATE" and pick adjacent cell (col + 1)
+  let fallback = null;
+  for (const addr in ws) {
+    if (addr.startsWith('!')) continue;
+    const cell = ws[addr];
+    if (cell && typeof cell.v === 'string' && /(^|[\s_])date([\s_:]|$)/i.test(cell.v.trim())) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: decoded.c + 1 });
+      const targetCell = ws[targetAddr];
+      if (!targetCell?.f || /^today\(\s*\)$/i.test(targetCell.f.trim())) {
+        return targetAddr;
+      }
+      if (!fallback) fallback = targetAddr;
+    }
+  }
+  return fallback;
 }
 
 /**

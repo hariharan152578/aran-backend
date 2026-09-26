@@ -88,7 +88,7 @@ const syncCompletedProductionCards = async () => {
           orderId,
           customerName,
           deliveryAddress,
-          status: 'Not Reached',
+          status: 'Ready',
           batchId: card._id,
           batchNumber: `BATCH-${String(card._id).slice(-6).toUpperCase()}`,
           templateName: card.templateName || card.templateId?.name || 'Standard Template',
@@ -97,6 +97,12 @@ const syncCompletedProductionCards = async () => {
         await newDispatch.save();
       }
     }
+
+    // Auto-migrate any legacy pre-dispatch states ('Not Reached', 'Reached', 'Processing') to 'Ready'
+    await DispatchOrder.updateMany(
+      { status: { $in: ['Not Reached', 'Reached', 'Processing'] } },
+      { $set: { status: 'Ready' } }
+    );
   } catch (err) {
     console.error('Failed to sync completed production cards to dispatch:', err);
   }

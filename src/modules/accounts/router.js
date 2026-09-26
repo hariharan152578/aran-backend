@@ -179,40 +179,64 @@ router.get('/payments', async (req, res) => {
 
     // Also include order transactions that may have been recorded on orders
     const ordersWithTx = await Order.find({ 'transactions.0': { $exists: true } });
-    const existingPmtRefs = new Set(data.map(p => p.paymentNumber || p.receiptNumber));
+    const existingPmtRefs = new Set();
+    const existingSettledOrderIds = new Set();
+    const existingSettledOrderNumbers = new Set();
+
+    data.forEach(p => {
+      if (p.paymentNumber) existingPmtRefs.add(String(p.paymentNumber).trim());
+      if (p.receiptNumber) existingPmtRefs.add(String(p.receiptNumber).trim());
+      (p.settledInvoices || []).forEach(si => {
+        const ordId = si.orderId?._id || si.orderId;
+        if (ordId) existingSettledOrderIds.add(String(ordId));
+        if (si.orderNumber) existingSettledOrderNumbers.add(String(si.orderNumber).trim());
+      });
+      if (p.invoiceId?.orderId) {
+        const invOrdId = p.invoiceId.orderId._id || p.invoiceId.orderId;
+        if (invOrdId) existingSettledOrderIds.add(String(invOrdId));
+      }
+    });
 
     const synthesizedPayments = [];
     for (const order of ordersWithTx) {
       const partyName = typeof order.party === 'string' ? order.party : (order.party?.name || 'Customer');
       (order.transactions || []).forEach((t, tIdx) => {
         const refNum = t.reference || `PMT-${order.orderNumber || order.id || order._id}-${tIdx + 1}`;
-        if (!existingPmtRefs.has(refNum) && !existingPmtRefs.has(t.reference)) {
-          synthesizedPayments.push({
-            _id: `ord-tx-${order._id}-${tIdx}`,
-            paymentNumber: refNum,
-            receiptNumber: refNum,
-            partyName,
-            totalAmountSettled: t.amount || 0,
-            amountReceived: t.amount || 0,
-            amountPaid: t.amount || 0,
-            discount: 0,
-            paymentDate: t.date || order.createdAt,
-            createdAt: t.date || order.createdAt,
-            paymentMode: t.paymentMode || 'Cash',
-            paymentMethod: t.paymentMode || 'Cash',
-            paymentReceivedIn: t.paymentMode === 'Cash' ? 'Cash in hand' : 'Bank',
-            notes: `Payment for Order ${order.id || order.orderNumber}`,
-            settledInvoices: [{
-              orderId: order._id,
-              orderNumber: order.id || order.orderNumber,
-              invoiceAmount: order.totalAmount || order.amount || t.amount,
-              amountReceived: t.amount || 0,
-              type: 'Order',
-              date: order.createdAt
-            }],
-            isOrderTransaction: true
-          });
+        
+        // Skip if this transaction reference already exists in Payment documents
+        if (t.reference && existingPmtRefs.has(String(t.reference).trim())) return;
+        if (existingPmtRefs.has(String(refNum).trim())) return;
+
+        // Skip if this order already has payments in Payment collection
+        if (existingSettledOrderIds.has(String(order._id)) || existingSettledOrderNumbers.has(String(order.id || order.orderNumber || '').trim())) {
+          return;
         }
+
+        synthesizedPayments.push({
+          _id: `ord-tx-${order._id}-${tIdx}`,
+          paymentNumber: refNum,
+          receiptNumber: refNum,
+          partyName,
+          totalAmountSettled: t.amount || 0,
+          amountReceived: t.amount || 0,
+          amountPaid: t.amount || 0,
+          discount: 0,
+          paymentDate: t.date || order.createdAt,
+          createdAt: t.date || order.createdAt,
+          paymentMode: t.paymentMode || 'Cash',
+          paymentMethod: t.paymentMode || 'Cash',
+          paymentReceivedIn: t.paymentMode === 'Cash' ? 'Cash in hand' : 'Bank',
+          notes: `Payment for Order ${order.id || order.orderNumber}`,
+          settledInvoices: [{
+            orderId: order._id,
+            orderNumber: order.id || order.orderNumber,
+            invoiceAmount: order.totalAmount || order.amount || t.amount,
+            amountReceived: t.amount || 0,
+            type: 'Order',
+            date: order.createdAt
+          }],
+          isOrderTransaction: true
+        });
       });
     }
 
@@ -424,20 +448,32 @@ router.post('/payments', async (req, res) => {
     }
 
     // Resolve destination account
+    const isCashMode = actualMode.toLowerCase() === 'cash';
     let targetAccount = null;
-    if (paymentReceivedIn) {
-      targetAccount = await Account.findOne({ name: paymentReceivedIn }) ||
-        (mongoose.Types.ObjectId.isValid(paymentReceivedIn) ? await Account.findById(paymentReceivedIn) : null);
-    }
-    if (!targetAccount) {
-      if (actualMode.toLowerCase() === 'cash') {
-        targetAccount = await Account.findOne({ $or: [{ type: 'Cash' }, { name: /cash/i }] });
-      } else {
-        targetAccount = await Account.findOne({ isDefault: true }) || await Account.findOne({ type: 'Bank' }) || await Account.findOne();
+
+    if (isCashMode) {
+      targetAccount = await Account.findOne({ $or: [{ type: 'Cash' }, { name: /cash/i }] });
+      if (!targetAccount) {
+        targetAccount = new Account({
+          name: 'Cash in hand',
+          type: 'Cash',
+          openingBalance: 0,
+          asOfDate: new Date(),
+          isDefault: false
+        });
+        await targetAccount.save();
+      }
+    } else {
+      if (paymentReceivedIn) {
+        targetAccount = await Account.findOne({ name: paymentReceivedIn }) ||
+          (mongoose.Types.ObjectId.isValid(paymentReceivedIn) ? await Account.findById(paymentReceivedIn) : null);
+      }
+      if (!targetAccount || targetAccount.type === 'Cash') {
+        targetAccount = await Account.findOne({ type: { $ne: 'Cash' } }) || await Account.findOne();
       }
     }
 
-    const finalAccountName = targetAccount?.name || paymentReceivedIn || (actualMode === 'Cash' ? 'Cash in hand' : '');
+    const finalAccountName = targetAccount?.name || (isCashMode ? 'Cash in hand' : paymentReceivedIn || 'Bank');
 
     const payment = new Payment({
       paymentNumber: num,
@@ -585,31 +621,45 @@ router.post('/expenses', async (req, res) => {
     const count = await Expense.countDocuments();
     const expenseNumber = `EXP-2026-${String(count + 1).padStart(3, '0')}`;
 
+    const isCashPayment = (paymentMethod || '').toLowerCase() === 'cash';
+
     let targetAccount = null;
-    if (paidFromAccountId && mongoose.Types.ObjectId.isValid(paidFromAccountId)) {
-      targetAccount = await Account.findById(paidFromAccountId);
-    } else if (paidFromAccount) {
-      targetAccount = await Account.findOne({ name: paidFromAccount });
-    }
-    if (!targetAccount) {
-      if ((paymentMethod || '').toLowerCase() === 'cash') {
-        targetAccount = await Account.findOne({ $or: [{ type: 'Cash' }, { name: /cash/i }] });
-      } else if (paymentMethod) {
-        targetAccount = await Account.findOne({ name: paymentMethod });
-      }
+    if (isCashPayment) {
+      // Find or auto-create dedicated Cash account
+      targetAccount = await Account.findOne({ $or: [{ type: 'Cash' }, { name: /cash/i }] });
       if (!targetAccount) {
-        targetAccount = await Account.findOne({ isDefault: true }) || await Account.findOne({ type: 'Cash' }) || await Account.findOne();
+        targetAccount = new Account({
+          name: 'Cash in hand',
+          type: 'Cash',
+          openingBalance: 0,
+          asOfDate: new Date(),
+          isDefault: false
+        });
+        await targetAccount.save();
+      }
+    } else {
+      // Banking-relevant payment method (UPI, Bank Transfer, Cheque, Card, Netbanking)
+      if (paidFromAccountId && mongoose.Types.ObjectId.isValid(paidFromAccountId)) {
+        targetAccount = await Account.findById(paidFromAccountId);
+      } else if (paidFromAccount) {
+        targetAccount = await Account.findOne({ name: paidFromAccount });
+      }
+      // If no valid bank account or was set to cash, select the first bank account
+      if (!targetAccount || targetAccount.type === 'Cash') {
+        targetAccount = await Account.findOne({ type: { $ne: 'Cash' } }) || await Account.findOne();
       }
     }
 
     const expAmt = Number(amount) || 0;
+    const finalAccountName = targetAccount ? targetAccount.name : (isCashPayment ? 'Cash in hand' : (paidFromAccount || 'Bank'));
+
     const data = new Expense({
       expenseNumber,
       title: title || '',
       category: category || 'Factory Overhead',
       amount: expAmt,
-      paymentMethod: paymentMethod || 'Cash',
-      paidFromAccount: targetAccount?.name || paidFromAccount || 'Cash in hand',
+      paymentMethod: isCashPayment ? 'Cash' : (paymentMethod || 'Bank Transfer'),
+      paidFromAccount: finalAccountName,
       paidFromAccountId: targetAccount?._id,
       notes: notes || '',
       date: date ? new Date(date) : new Date()
@@ -624,7 +674,7 @@ router.post('/expenses', async (req, res) => {
         type: 'Expense',
         txnNo: expenseNumber,
         partyName: data.category || 'Direct Expense',
-        mode: data.paymentMethod || 'Cash',
+        mode: data.paymentMethod,
         paidAmount: expAmt,
         receivedAmount: 0,
         referenceExpenseId: data._id,
@@ -657,7 +707,30 @@ router.get('/bank-accounts', async (req, res) => {
   try {
     let accounts = await Account.find().sort({ createdAt: 1 });
 
+    // Ensure default Cash account exists
+    let cashAccount = accounts.find(a => a.type === 'Cash' || a.name.toLowerCase().includes('cash'));
+    if (!cashAccount) {
+      cashAccount = await Account.findOne({ $or: [{ type: 'Cash' }, { name: /cash/i }] });
+      if (!cashAccount) {
+        cashAccount = new Account({
+          name: 'Cash in hand',
+          type: 'Cash',
+          openingBalance: 0,
+          asOfDate: new Date(),
+          isDefault: false
+        });
+        await cashAccount.save();
+        accounts = await Account.find().sort({ createdAt: 1 });
+      }
+    }
 
+    if (cashAccount) {
+      // Heal any cash transactions erroneously linked to non-cash bank accounts
+      await AccountTransaction.updateMany(
+        { mode: 'Cash', accountId: { $ne: cashAccount._id } },
+        { $set: { accountId: cashAccount._id, accountName: cashAccount.name } }
+      );
+    }
 
     // Calculate current balance for each account
     const accountsWithBalances = await Promise.all(accounts.map(async (acc) => {
@@ -675,7 +748,7 @@ router.get('/bank-accounts', async (req, res) => {
       const rawPayments = await Payment.find(
         isCash 
           ? { $or: [{ paymentReceivedIn: acc.name }, { paymentMode: 'Cash' }, { paymentMethod: 'Cash' }] }
-          : { paymentReceivedIn: acc.name }
+          : { paymentReceivedIn: acc.name, paymentMode: { $ne: 'Cash' }, paymentMethod: { $ne: 'Cash' } }
       );
       const unlinkedPayments = rawPayments.filter(p => !referencedPaymentIds.has(String(p._id)));
       const totalUnlinkedPaymentsReceived = unlinkedPayments.reduce((sum, p) => sum + (Number(p.amountReceived) || Number(p.amountPaid) || 0), 0);
@@ -684,7 +757,7 @@ router.get('/bank-accounts', async (req, res) => {
       const rawExpenses = await Expense.find(
         isCash
           ? { $or: [{ paidFromAccount: acc.name }, { paymentMethod: 'Cash' }, { paymentMethod: acc.name }] }
-          : { $or: [{ paidFromAccount: acc.name }, { paymentMethod: acc.name }] }
+          : { paidFromAccount: acc.name, paymentMethod: { $ne: 'Cash' } }
       );
       const unlinkedExpenses = rawExpenses.filter(e => !referencedExpenseIds.has(String(e._id)));
       const totalUnlinkedExpenses = unlinkedExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
@@ -766,14 +839,14 @@ router.get('/bank-accounts/:id/transactions', async (req, res) => {
     const rawPayments = await Payment.find(
       isCash
         ? { $or: [{ paymentReceivedIn: acc.name }, { paymentMode: 'Cash' }, { paymentMethod: 'Cash' }] }
-        : { paymentReceivedIn: acc.name }
+        : { paymentReceivedIn: acc.name, paymentMode: { $ne: 'Cash' }, paymentMethod: { $ne: 'Cash' } }
     ).sort({ paymentDate: 1, createdAt: 1 });
     const unlinkedPayments = rawPayments.filter(p => !referencedPaymentIds.has(String(p._id)));
 
     const rawExpenses = await Expense.find(
       isCash
         ? { $or: [{ paidFromAccount: acc.name }, { paymentMethod: 'Cash' }, { paymentMethod: acc.name }] }
-        : { $or: [{ paidFromAccount: acc.name }, { paymentMethod: acc.name }] }
+        : { paidFromAccount: acc.name, paymentMethod: { $ne: 'Cash' } }
     ).sort({ date: 1, createdAt: 1 });
     const unlinkedExpenses = rawExpenses.filter(e => !referencedExpenseIds.has(String(e._id)));
 

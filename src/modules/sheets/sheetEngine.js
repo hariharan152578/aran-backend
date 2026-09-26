@@ -134,7 +134,8 @@ export async function runSheetEngine(template, payload = {}) {
   }
 
   const orderNo = payload.orderNo || 'ORD-SIM';
-  const cacheKey = `${template._id || template.code}:${gs.sheetName}:${orderNo}:${JSON.stringify(windows)}`;
+  const orderDate = payload.orderDate || payload.date || '';
+  const cacheKey = `${template._id || template.code}:${gs.sheetName}:${orderNo}:${orderDate}:${JSON.stringify(windows)}`;
 
   // Return recent result if available within TTL
   const cachedHit = recentCalculations.get(cacheKey);
@@ -155,6 +156,7 @@ export async function runSheetEngine(template, payload = {}) {
       {
         sheetName: gs.sheetName,
         orderNo,
+        orderDate,
         materialSheetName: gs.materialSheetName || '',
         windows
       }

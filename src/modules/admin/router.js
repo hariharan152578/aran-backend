@@ -206,10 +206,43 @@ router.get('/database/backup/download', async (req, res) => {
   }
 });
 
+// 10.1 Get backup directory location info
+router.get('/database/backup/location', (req, res) => {
+  try {
+    const info = DatabaseService.getBackupDirectoryInfo();
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 10.2 Set custom backup directory location
+router.post('/database/backup/location', async (req, res) => {
+  try {
+    const { directory } = req.body;
+    const result = await DatabaseService.setBackupDirectory(directory, req.user?.username || 'admin');
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 10.3 Open current backup directory in local File Explorer
+router.post('/database/backup/open-folder', (req, res) => {
+  try {
+    const { directory } = req.body;
+    const result = DatabaseService.openBackupFolderInExplorer(directory);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 11. Create a server-side backup snapshot
 router.post('/database/backup/server', async (req, res) => {
   try {
-    const result = await DatabaseService.saveServerBackup(req.user?.username || 'admin');
+    const { directory } = req.body;
+    const result = await DatabaseService.saveServerBackup(req.user?.username || 'admin', 'backup', directory);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -219,7 +252,8 @@ router.post('/database/backup/server', async (req, res) => {
 // 12. List all server backups
 router.get('/database/backups', async (req, res) => {
   try {
-    const backups = await DatabaseService.listServerBackups();
+    const { directory } = req.query;
+    const backups = await DatabaseService.listServerBackups(directory);
     res.json(backups);
   } catch (err) {
     res.status(500).json({ error: err.message });

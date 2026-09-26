@@ -10,6 +10,8 @@ import Payment from '../accounts/models/Payment.js';
 import QuotationSettings from './models/QuotationSettings.js';
 import ProductionCard from '../production/models/ProductionCard.js';
 import DispatchOrder from '../dispatch/models/DispatchOrder.js';
+import Account from '../accounts/models/Account.js';
+import AccountTransaction from '../accounts/models/AccountTransaction.js';
 
 const router = express.Router();
 
@@ -188,7 +190,7 @@ const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 function parseOrderId(idStr) {
   if (!idStr || typeof idStr !== 'string') return null;
   const trimmed = idStr.trim();
-  const match = trimmed.match(/^(?:Set\s*(\d+)\s*[-:]\s*|S(\d+)[-:]\s*)?([A-Za-z])\s*(\d{1,3})$/i);
+  const match = trimmed.match(/^(?:Set\s*(\d+)\s*[-:]\s*|S(\d+)[-:]\s*)?([A-Za-z]+)\s*[-_]?\s*(\d{1,4})$/i);
   if (match) {
     const setNum = parseInt(match[1] || match[2] || '1', 10);
     const series = match[3].toUpperCase();
@@ -269,7 +271,22 @@ function computeNextOrderInfo(latest, offset = 1) {
 }
 
 async function getNextOrderIdInfo(attemptOffset = 1) {
+  let offset = attemptOffset;
   const latest = await getLatestAlphaOrder();
+  while (offset <= 1000) {
+    const candidate = computeNextOrderInfo(latest, offset);
+    const existing = await Order.findOne({
+      $or: [
+        { id: candidate.nextId },
+        { id: candidate.orderNumber },
+        { orderNumber: candidate.orderNumber }
+      ]
+    });
+    if (!existing) {
+      return candidate;
+    }
+    offset++;
+  }
   return computeNextOrderInfo(latest, attemptOffset);
 }
 
@@ -393,13 +410,35 @@ router.post('/orders', async (req, res) => {
         orderData.setLabel = parsed.setLabel;
         orderData.series = parsed.series;
         orderData.sequenceNumber = parsed.sequenceNumber;
-        // Normalize id if user provided just short "A001"
+        // Normalize id if user provided just short "A001" or "AM1"
         if (!orderData.id.includes('Set')) {
           orderData.id = parsed.formattedId;
         }
       }
-      order = new Order(orderData);
-      await order.save();
+
+      // Check if an order already exists with this ID or orderNumber
+      const possibleIds = [
+        orderData.id,
+        orderId,
+        orderData.orderNumber
+      ].filter(Boolean);
+
+      let existingOrder = await Order.findOne({
+        $or: [
+          { id: { $in: possibleIds } },
+          { orderNumber: { $in: possibleIds } }
+        ]
+      });
+
+      if (existingOrder) {
+        // If it already exists, update the order with the incoming data
+        // (handles re-conversion, updating quotation reference, etc.)
+        Object.assign(existingOrder, orderData);
+        order = await existingOrder.save();
+      } else {
+        order = new Order(orderData);
+        await order.save();
+      }
     }
 
     res.status(201).json(order);
@@ -490,7 +529,6 @@ router.put('/orders/:id/payment', async (req, res) => {
     // Handle adding a transaction
     else if (amount) {
       const numAmount = Number(amount);
-      order.transactions.push({ amount: numAmount, paymentMode });
       order.amountPaid += numAmount;
 
       const orderTotalAmt = order.totalAmount || order.amount || 0;
@@ -523,6 +561,8 @@ router.put('/orders/:id/payment', async (req, res) => {
         }
       }
 
+      const customerName = typeof order.party === 'string' ? order.party : (order.party?.name || 'Customer');
+
       if (!invoice) {
         let quotationId = null;
         if (order.quotationRef) {
@@ -535,7 +575,6 @@ router.put('/orders/:id/payment', async (req, res) => {
           if (quote) quotationId = quote._id;
         }
 
-        const customerName = typeof order.party === 'string' ? order.party : (order.party?.name || 'Customer');
         const count = await Invoice.countDocuments();
         const invoiceNumber = `INV-2026-${String(count + 1).padStart(3, '0')}`;
         const defaultDue = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000);
@@ -563,6 +602,34 @@ router.put('/orders/:id/payment', async (req, res) => {
       }
       const paymentNumber = String(maxNum + 1);
 
+      order.transactions = order.transactions || [];
+      order.transactions.push({
+        amount: numAmount,
+        paymentMode: paymentMode || 'Cash',
+        date: new Date(),
+        reference: paymentNumber
+      });
+
+      // Resolve destination account
+      const isCashMode = (paymentMode || '').toLowerCase() === 'cash';
+      let targetAccount = null;
+      if (isCashMode) {
+        targetAccount = await Account.findOne({ $or: [{ type: 'Cash' }, { name: /cash/i }] });
+        if (!targetAccount) {
+          targetAccount = new Account({ name: 'Cash in hand', type: 'Cash', openingBalance: 0 });
+          await targetAccount.save();
+        }
+      } else {
+        const reqAcc = req.body.paymentReceivedIn;
+        if (reqAcc) {
+          targetAccount = await Account.findOne({ name: reqAcc }) || (mongoose.Types.ObjectId.isValid(reqAcc) ? await Account.findById(reqAcc) : null);
+        }
+        if (!targetAccount || targetAccount.type === 'Cash') {
+          targetAccount = await Account.findOne({ type: { $ne: 'Cash' } }) || await Account.findOne();
+        }
+      }
+      const finalAccountName = targetAccount?.name || (isCashMode ? 'Cash in hand' : req.body.paymentReceivedIn || 'Bank');
+
       const payment = new Payment({
         paymentNumber,
         receiptNumber: paymentNumber,
@@ -584,10 +651,28 @@ router.put('/orders/:id/payment', async (req, res) => {
         amountPaid: numAmount,
         paymentMethod: paymentMode || 'Cash',
         paymentMode: paymentMode || 'Cash',
-        paymentReceivedIn: (paymentMode || '').toLowerCase() === 'cash' ? 'Cash in hand' : 'Bank',
+        paymentReceivedIn: finalAccountName,
         paymentDate: new Date()
       });
       await payment.save();
+
+      // Also create corresponding AccountTransaction so it syncs to Cash & Bank
+      if (targetAccount && numAmount > 0) {
+        const tx = new AccountTransaction({
+          accountId: targetAccount._id,
+          accountName: targetAccount.name,
+          date: payment.paymentDate || new Date(),
+          type: 'Payment In',
+          txnNo: paymentNumber,
+          partyName: customerName,
+          mode: paymentMode || 'Cash',
+          receivedAmount: numAmount,
+          paidAmount: 0,
+          referencePaymentId: payment._id,
+          remarks: `Advance for Order ${order.id || order.orderNumber}`
+        });
+        await tx.save();
+      }
 
       // Update matching invoice amounts & status
       invoice.amountReceived = (Number(invoice.amountReceived) || 0) + numAmount;

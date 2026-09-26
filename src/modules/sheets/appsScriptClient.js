@@ -227,7 +227,7 @@ export async function fetchStructure(url, { sheetName = null, timeoutMs } = {}) 
  */
 export async function postOrder(
   url,
-  { sheetName, orderNo = '', materialSheetName = '', windows = [] },
+  { sheetName, orderNo = '', orderDate = '', materialSheetName = '', windows = [] },
   { timeoutMs } = {}
 ) {
   const base = validateWebAppUrl(url);
@@ -245,8 +245,10 @@ export async function postOrder(
   const payload = {
     sheetName,
     orderNo,
+    orderDate,
     windows: windows.map(w => ({ width: Number(w.width), height: Number(w.height) }))
   };
+  if (orderDate) payload.orderDate = orderDate;
   // Only send materialSheetName when set: an older deployment ignores it and
   // falls back to its hardcoded default, which is the desired behaviour.
   if (materialSheetName) payload.materialSheetName = materialSheetName;
