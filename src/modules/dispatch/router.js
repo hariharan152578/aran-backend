@@ -182,7 +182,29 @@ router.get('/vehicles', async (req, res) => {
 
 router.post('/vehicles', async (req, res) => {
   try {
-    const data = new Vehicle(req.body);
+    const { vehicleNumber, driverMobile, driverNumber, driverPhone, driverName, type, status } = req.body;
+    const vNum = (vehicleNumber || '').trim().toUpperCase();
+    const dMobile = (driverMobile || driverNumber || driverPhone || '').trim();
+
+    if (!vNum) {
+      return res.status(400).json({ error: 'Vehicle number is mandatory' });
+    }
+    if (!dMobile) {
+      return res.status(400).json({ error: 'Driver number / mobile number is mandatory' });
+    }
+
+    const existing = await Vehicle.findOne({ vehicleNumber: vNum });
+    if (existing) {
+      return res.status(400).json({ error: `Vehicle "${vNum}" already exists` });
+    }
+
+    const data = new Vehicle({
+      vehicleNumber: vNum,
+      driverMobile: dMobile,
+      driverName: (driverName || '').trim() || 'Fleet Driver',
+      type: (type || '').trim() || 'Mini Tempo',
+      status: status || 'Available'
+    });
     await data.save();
     res.status(201).json(data);
   } catch (err) {

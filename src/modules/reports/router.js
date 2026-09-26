@@ -4,6 +4,8 @@ import ProductionCard from '../production/models/ProductionCard.js';
 import DispatchOrder from '../dispatch/models/DispatchOrder.js';
 import Enquiry from '../crm/models/Enquiry.js';
 import Invoice from '../accounts/models/Invoice.js';
+import Customer from '../crm/models/Customer.js';
+import Payment from '../accounts/models/Payment.js';
 
 const router = express.Router();
 
@@ -229,6 +231,223 @@ router.get('/finance', async (req, res) => {
   } catch (err) {
     console.error("Finance Error:", err.stack);
     res.status(500).json({ error: err.stack });
+  }
+});
+
+router.get('/customers', async (req, res) => {
+  try {
+    const { fromDate, toDate, search, status } = req.query;
+
+    const customers = await Customer.find().lean();
+    const invoices = await Invoice.find().populate('orderId').lean();
+    const payments = await Payment.find().lean();
+    const orders = await Order.find().lean();
+
+    // Map of normalized customer name to aggregated customer metrics
+    const customerMap = new Map();
+
+    // 1. Initialize with CRM customers
+    customers.forEach(c => {
+      const key = (c.name || '').trim().toLowerCase();
+      if (!key) return;
+
+      customerMap.set(key, {
+        id: c._id?.toString(),
+        crmCustomerId: c._id?.toString(),
+        name: c.name,
+        company: c.company || '',
+        phone: c.phone || c.mobileNumber || '-',
+        mobileNumber: c.mobileNumber || c.phone || '-',
+        email: c.email || '',
+        billingAddress: c.billingAddress || '',
+        openingBalance: Number(c.openingBalance) || 0,
+        balanceType: c.balanceType || 'To Collect',
+        creditLimit: Number(c.creditLimit) || 0,
+        totalCreditAmount: 0,
+        totalPaidAmount: 0,
+        amountBalance: 0,
+        invoices: [],
+        payments: [],
+        orders: [],
+        isCrmCustomer: true
+      });
+    });
+
+    // 2. Aggregate Invoices
+    invoices.forEach(inv => {
+      let invDate = inv.createdAt ? new Date(inv.createdAt) : null;
+      if (fromDate && invDate && invDate < new Date(fromDate)) return;
+      if (toDate && invDate) {
+        const toD = new Date(toDate);
+        toD.setHours(23, 59, 59, 999);
+        if (invDate > toD) return;
+      }
+
+      const key = (inv.customerName || '').trim().toLowerCase();
+      if (!key) return;
+
+      if (!customerMap.has(key)) {
+        customerMap.set(key, {
+          id: `ext-${inv._id}`,
+          crmCustomerId: null,
+          name: inv.customerName,
+          company: '',
+          phone: '-',
+          mobileNumber: '-',
+          email: '',
+          billingAddress: '',
+          openingBalance: 0,
+          balanceType: 'To Collect',
+          creditLimit: 0,
+          totalCreditAmount: 0,
+          totalPaidAmount: 0,
+          amountBalance: 0,
+          invoices: [],
+          payments: [],
+          orders: [],
+          isCrmCustomer: false
+        });
+      }
+
+      const cust = customerMap.get(key);
+      const invAmt = Number(inv.amount) || 0;
+      cust.totalCreditAmount += invAmt;
+      cust.invoices.push({
+        _id: inv._id,
+        invoiceNumber: inv.invoiceNumber,
+        orderRef: inv.orderRef || (inv.orderId?.id || inv.orderId?.orderNumber || ''),
+        amount: invAmt,
+        amountReceived: Number(inv.amountReceived) || 0,
+        status: inv.status,
+        date: inv.createdAt,
+        dueDate: inv.dueDate
+      });
+    });
+
+    // 3. Aggregate Payments
+    payments.forEach(p => {
+      let pDate = p.paymentDate ? new Date(p.paymentDate) : (p.createdAt ? new Date(p.createdAt) : null);
+      if (fromDate && pDate && pDate < new Date(fromDate)) return;
+      if (toDate && pDate) {
+        const toD = new Date(toDate);
+        toD.setHours(23, 59, 59, 999);
+        if (pDate > toD) return;
+      }
+
+      const key = (p.partyName || '').trim().toLowerCase();
+      if (!key) return;
+
+      if (customerMap.has(key)) {
+        const cust = customerMap.get(key);
+        const pAmt = Number(p.amountReceived != null ? p.amountReceived : p.amountPaid) || 0;
+        cust.totalPaidAmount += pAmt;
+        cust.payments.push({
+          _id: p._id,
+          paymentNumber: p.paymentNumber || p.receiptNumber,
+          amount: pAmt,
+          discount: Number(p.discount) || 0,
+          paymentMethod: p.paymentMethod || p.paymentMode || 'Cash',
+          paymentReceivedIn: p.paymentReceivedIn || '',
+          date: p.paymentDate || p.createdAt,
+          notes: p.notes
+        });
+      }
+    });
+
+    // 4. Extract phone/details from Orders if not yet set, and handle orders without invoices
+    orders.forEach(o => {
+      let oPartyName = '';
+      let oPhone = '';
+      if (typeof o.party === 'object' && o.party !== null) {
+        oPartyName = o.party.customerName || o.party.name || o.party.company || '';
+        oPhone = o.party.phone || o.party.mobile || o.party.mobileNumber || '';
+      } else if (typeof o.party === 'string') {
+        oPartyName = o.party;
+      }
+      oPartyName = oPartyName || o.customerName || '';
+      const key = oPartyName.trim().toLowerCase();
+      if (!key) return;
+
+      if (customerMap.has(key)) {
+        const cust = customerMap.get(key);
+        if ((!cust.phone || cust.phone === '-') && oPhone) {
+          cust.phone = oPhone;
+          cust.mobileNumber = oPhone;
+        }
+        // If customer has NO invoices registered, add order total as credit
+        if (cust.invoices.length === 0) {
+          cust.totalCreditAmount += (Number(o.totalAmount || o.amount) || 0);
+          cust.totalPaidAmount += (Number(o.amountPaid) || 0);
+        }
+        cust.orders.push({
+          id: o.id || o.orderNumber,
+          orderNumber: o.orderNumber,
+          totalAmount: o.totalAmount || o.amount,
+          amountPaid: o.amountPaid,
+          status: o.status,
+          date: o.createdAt
+        });
+      }
+    });
+
+    // 5. Compute balances and finalize status
+    let list = Array.from(customerMap.values()).map(c => {
+      const openingDebit = c.balanceType === 'To Pay' ? -c.openingBalance : c.openingBalance;
+      // Net Amount Balance = Opening Debit + Total Credit Amount - Total Paid Amount
+      c.amountBalance = openingDebit + c.totalCreditAmount - c.totalPaidAmount;
+      if (c.amountBalance > 0.01) {
+        c.status = 'Outstanding';
+      } else if (c.amountBalance < -0.01) {
+        c.status = 'Advance';
+      } else {
+        c.status = 'Settled';
+      }
+      return c;
+    });
+
+    // Filter by search term
+    if (search) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(c => 
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.phone && c.phone.toLowerCase().includes(q)) ||
+        (c.mobileNumber && c.mobileNumber.toLowerCase().includes(q)) ||
+        (c.company && c.company.toLowerCase().includes(q))
+      );
+    }
+
+    // Filter by status
+    if (status && status !== 'all') {
+      if (status === 'outstanding') {
+        list = list.filter(c => c.amountBalance > 0.01);
+      } else if (status === 'settled') {
+        list = list.filter(c => Math.abs(c.amountBalance) <= 0.01);
+      } else if (status === 'advance') {
+        list = list.filter(c => c.amountBalance < -0.01);
+      }
+    }
+
+    // Default sort by amount balance descending
+    list.sort((a, b) => b.amountBalance - a.amountBalance);
+
+    // Compute summary metrics
+    const summary = {
+      totalCustomers: list.length,
+      totalCreditAmount: list.reduce((acc, c) => acc + (c.totalCreditAmount || 0), 0),
+      totalPaidAmount: list.reduce((acc, c) => acc + (c.totalPaidAmount || 0), 0),
+      totalBalanceAmount: list.reduce((acc, c) => acc + (c.amountBalance > 0 ? c.amountBalance : 0), 0),
+      outstandingCount: list.filter(c => c.amountBalance > 0.01).length,
+      settledCount: list.filter(c => Math.abs(c.amountBalance) <= 0.01).length,
+      advanceCount: list.filter(c => c.amountBalance < -0.01).length
+    };
+
+    res.json({
+      summary,
+      customers: list
+    });
+  } catch (err) {
+    console.error('Customer Report Error:', err.stack);
+    res.status(500).json({ error: err.message });
   }
 });
 
