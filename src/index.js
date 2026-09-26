@@ -83,6 +83,6 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
-  console.log(`Aran ERP Backend v2 - AUTO DEPLOY TEST 2 - port ${PORT}`);
+  console.log(`Aran ERP Backend v2 - AUTO DEPLOY TEST 3 - port ${PORT}`);
 });
 // Trigger nodemon restart comment 2
