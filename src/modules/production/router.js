@@ -1,6 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import Order from '../sales/models/Order.js';
+import Quotation from '../sales/models/Quotation.js';
 import ProductionCard from './models/ProductionCard.js';
 import Template from '../configuration/models/Template.js';
 import { runEngine } from '../calculation-engine/engineDispatcher.js';
@@ -49,6 +50,35 @@ const populateCard = async (card) => {
 
     if (orderDoc) {
       const orderObj = orderDoc.toObject ? orderDoc.toObject() : orderDoc;
+
+      // Populate quotation details & extraCharges if available
+      try {
+        const quotQuery = [];
+        if (orderObj.quotationRef) {
+          quotQuery.push({ quotationNumber: orderObj.quotationRef });
+          if (mongoose.Types.ObjectId.isValid(orderObj.quotationRef)) {
+            quotQuery.push({ _id: orderObj.quotationRef });
+          }
+        }
+        if (orderObj.id) quotQuery.push({ orderRef: orderObj.id });
+        if (orderObj.orderNumber) quotQuery.push({ orderRef: orderObj.orderNumber });
+
+        if (quotQuery.length > 0) {
+          const quotDoc = await Quotation.findOne({ $or: quotQuery }).lean();
+          if (quotDoc) {
+            orderObj.quotation = quotDoc;
+            if (!orderObj.extraCharges && quotDoc.extraCharges) {
+              orderObj.extraCharges = quotDoc.extraCharges;
+            }
+            if ((!orderObj.additionalCharges || orderObj.additionalCharges.length === 0) && quotDoc.additionalCharges) {
+              orderObj.additionalCharges = quotDoc.additionalCharges;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to link quotation to order in card population:', err.message);
+      }
+
       const party = orderObj.party;
       const partyName = typeof party === 'object' && party !== null
         ? (party.customerName || party.name || party.company || '')

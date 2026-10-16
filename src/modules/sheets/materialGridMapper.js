@@ -91,11 +91,15 @@ function text(value) {
  * which is a different thing from a computed zero.
  */
 function toNumber(value) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return Number.isInteger(value) ? value : Math.round(value * 10) / 10;
+  }
   const raw = String(value ?? '').trim().replace(/,/g, '');
   if (raw === '') return null;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  return Number.isInteger(n) ? n : Math.round(n * 10) / 10;
 }
 
 function gridBounds(grid) {
