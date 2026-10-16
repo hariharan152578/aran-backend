@@ -57,6 +57,7 @@ const QuotationSchema = new mongoose.Schema({
   
   discountPercent: { type: Number, default: 0 },
   discountAmount: { type: Number, default: 0 },
+  discountType: { type: String, default: 'percentage' },
   subtotal: { type: Number, default: 0 },
   totalSqFt: { type: Number, default: 0 },
   totalQty: { type: Number, default: 0 },
