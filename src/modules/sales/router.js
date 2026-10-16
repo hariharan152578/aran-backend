@@ -78,10 +78,10 @@ router.get('/profile-descriptions', async (req, res) => {
   try {
     const rootCategories = await Category.find({ parentId: null }).sort({ name: 1 });
     const profileDescriptions = await ProfileDescription.find().sort({ name: 1 });
-    
+
     const seen = new Set();
     const result = [];
-    
+
     rootCategories.forEach(c => {
       const lower = c.name.trim().toLowerCase();
       if (!seen.has(lower)) {
@@ -89,7 +89,7 @@ router.get('/profile-descriptions', async (req, res) => {
         result.push({ _id: c._id, name: c.name });
       }
     });
-    
+
     profileDescriptions.forEach(p => {
       const lower = p.name.trim().toLowerCase();
       if (!seen.has(lower)) {
@@ -97,7 +97,7 @@ router.get('/profile-descriptions', async (req, res) => {
         result.push({ _id: p._id, name: p.name });
       }
     });
-    
+
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch profile descriptions', details: err.message });
@@ -109,15 +109,15 @@ router.post('/profile-descriptions', async (req, res) => {
     const { name } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
     const trimmed = name.trim();
-    
+
     // Check if category exists
-    let existing = await Category.findOne({ 
+    let existing = await Category.findOne({
       parentId: null,
-      name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
+      name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
     });
     if (!existing) {
-      existing = await ProfileDescription.findOne({ 
-        name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
+      existing = await ProfileDescription.findOne({
+        name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
       });
     }
     if (existing) {
@@ -135,7 +135,7 @@ router.post('/profile-descriptions', async (req, res) => {
         { name: trimmed },
         { upsert: true }
       );
-    } catch (e) {}
+    } catch (e) { }
 
     res.status(201).json({ _id: category._id, name: category.name });
   } catch (err) {
@@ -157,13 +157,13 @@ router.post('/quotation-categories', async (req, res) => {
   try {
     const { name, termsAndConditions, customColumns } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
-    
+
     const existing = await QuotationCategory.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
     if (existing) {
       return res.status(400).json({ error: 'Quotation category already exists' });
     }
 
-    const category = new QuotationCategory({ 
+    const category = new QuotationCategory({
       name,
       termsAndConditions: termsAndConditions || '',
       customColumns: customColumns || []
@@ -375,13 +375,13 @@ router.post('/orders', async (req, res) => {
     if (!orderId || orderId === 'New Draft') {
       let isUnique = false;
       let attempt = 1;
-      
+
       while (!isUnique && attempt <= 10) {
         const nextInfo = await getNextOrderIdInfo(attempt);
         orderId = nextInfo.nextId;
         try {
-          const orderData = { 
-            ...req.body, 
+          const orderData = {
+            ...req.body,
             id: orderId,
             orderNumber: nextInfo.orderNumber,
             setNumber: nextInfo.setNumber,
@@ -391,7 +391,7 @@ router.post('/orders', async (req, res) => {
           };
           order = new Order(orderData);
           await order.save();
-          isUnique = true; 
+          isUnique = true;
         } catch (saveErr) {
           if (saveErr.code === 11000) {
             attempt++;
@@ -525,7 +525,7 @@ router.put('/orders/:id/payment', async (req, res) => {
     // Handle manual status override
     if (paymentStatus && !amount) {
       order.paymentStatus = paymentStatus;
-    } 
+    }
     // Handle adding a transaction
     else if (amount) {
       const numAmount = Number(amount);
@@ -541,7 +541,7 @@ router.put('/orders/:id/payment', async (req, res) => {
       }
 
       // Synchronize/Create matching Invoice & Payment Receipt in Accounts
-      let invoice = await Invoice.findOne({ 
+      let invoice = await Invoice.findOne({
         $or: [
           { orderId: order._id },
           { orderRef: order.id },
@@ -962,7 +962,8 @@ router.get('/accessory-defaults', async (req, res) => {
         packingForwarding: { qty: 0, rate: 0, amount: 0 },
         erectionScrew: { qty: 0, rate: 0, amount: 0 },
         foam: { qty: 0, rate: 0, amount: 0 },
-        silicon: { qty: 0, rate: 0, amount: 0 }
+        silicon: { qty: 0, rate: 0, amount: 0 },
+        customAccessories: []
       };
     }
     res.json(settings);
@@ -973,7 +974,22 @@ router.get('/accessory-defaults', async (req, res) => {
 
 router.post('/accessory-defaults', async (req, res) => {
   try {
-    const { packingForwarding, erectionScrew, foam, silicon } = req.body;
+    const { packingForwarding, erectionScrew, foam, silicon, customAccessories } = req.body;
+    const sanitizedCustom = Array.isArray(customAccessories) ? customAccessories.map(ca => {
+      const type = ca.type || 'rate';
+      const qty = type === 'rate' ? (Number(ca.qty) || 0) : 1;
+      const rate = Number(ca.rate) || 0;
+      const amount = type === 'rate' ? (qty * rate) : (Number(ca.amount) || rate || 0);
+      return {
+        id: ca.id || `acc_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        name: ca.name?.trim() || 'Accessory',
+        type,
+        qty,
+        rate,
+        amount
+      };
+    }) : [];
+
     const settings = await QuotationSettings.findOneAndUpdate(
       { key: 'default_accessories' },
       {
@@ -997,7 +1013,8 @@ router.post('/accessory-defaults', async (req, res) => {
           qty: Number(silicon?.qty) || 0,
           rate: Number(silicon?.rate) || 0,
           amount: Number(silicon?.amount) || 0
-        }
+        },
+        customAccessories: sanitizedCustom
       },
       { upsert: true, new: true }
     );
