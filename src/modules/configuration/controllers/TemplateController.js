@@ -491,8 +491,16 @@ export const updateGoogleSheetTemplate = async (req, res) => {
     if (sheetName) template.googleSheet.sheetName = sheetName;
     if (materialSheetName !== undefined) template.googleSheet.materialSheetName = materialSheetName;
     if (inputHints !== undefined) template.googleSheet.inputHints = inputHints;
-    if (defaultPrintPages !== undefined) template.googleSheet.defaultPrintPages = defaultPrintPages;
-    if (customCellStyles !== undefined) template.googleSheet.customCellStyles = customCellStyles;
+    if (defaultPrintPages !== undefined) {
+      template.googleSheet.defaultPrintPages = defaultPrintPages;
+      template.markModified('googleSheet.defaultPrintPages');
+      template.markModified('googleSheet');
+    }
+    if (customCellStyles !== undefined) {
+      template.googleSheet.customCellStyles = customCellStyles;
+      template.markModified('googleSheet.customCellStyles');
+      template.markModified('googleSheet');
+    }
 
     await template.save();
 

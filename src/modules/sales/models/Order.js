@@ -8,6 +8,10 @@ const OrderSchema = new mongoose.Schema({
   series: { type: String, default: 'A', index: true }, // e.g. "A" (A-Z)
   sequenceNumber: { type: Number, default: 1, index: true }, // e.g. 1 (1-999)
   quotationRef: { type: String },
+  quotationDate: { type: Date },
+  productionCardNo: { type: String },
+  employee: { type: String, default: '' },
+  followedBy: { type: String, default: '' },
   date: { type: String }, // Frontend usually stores locale string
   party: { type: mongoose.Schema.Types.Mixed }, // Matches Quotation
   amount: { type: Number, default: 0 },

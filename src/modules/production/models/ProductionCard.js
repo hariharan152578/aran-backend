@@ -8,6 +8,9 @@ const ProductionCardSchema = new mongoose.Schema({
   templateName: { type: String },
   measurements: { type: mongoose.Schema.Types.Mixed },
 
+  productionCardNo: { type: String },
+  employee: { type: String, default: '' },
+  followedBy: { type: String, default: '' },
   productionDate: { type: Date },
   status: { 
     type: String, 

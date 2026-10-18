@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import Order from '../sales/models/Order.js';
 import ProductionCard from '../production/models/ProductionCard.js';
 import DispatchOrder from '../dispatch/models/DispatchOrder.js';
@@ -6,6 +7,9 @@ import Enquiry from '../crm/models/Enquiry.js';
 import Invoice from '../accounts/models/Invoice.js';
 import Customer from '../crm/models/Customer.js';
 import Payment from '../accounts/models/Payment.js';
+import Quotation from '../sales/models/Quotation.js';
+import User from '../../models/User.js';
+import { seedPSeries } from '../../scripts/seedPSeries.js';
 
 const router = express.Router();
 
@@ -447,6 +451,507 @@ router.get('/customers', async (req, res) => {
     });
   } catch (err) {
     console.error('Customer Report Error:', err.stack);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SERIES REPORT =================
+router.get('/series', async (req, res) => {
+  try {
+    const {
+      series = 'All',
+      search = '',
+      fromDate = '',
+      toDate = '',
+      employee = '',
+      sortBy = 'sequence',
+      sortOrder = 'asc'
+    } = req.query;
+
+    // Check if we need to auto-seed P-series
+    const pOrdersCount = await Order.countDocuments({ series: 'P' });
+    if (pOrdersCount === 0) {
+      await seedPSeries().catch(err => console.warn('Auto-seed P-Series warning:', err.message));
+    }
+
+    const orders = await Order.find().lean();
+    const quotations = await Quotation.find().lean();
+    const productionCards = await ProductionCard.find().lean();
+    const users = await User.find({}, 'name username role').lean();
+
+    // Fast lookup maps
+    const quoteByNumber = new Map();
+    const quoteByOrderRef = new Map();
+    quotations.forEach(q => {
+      if (q.quotationNumber) quoteByNumber.set(String(q.quotationNumber).trim().toUpperCase(), q);
+      if (q.orderRef) quoteByOrderRef.set(String(q.orderRef).trim().toUpperCase(), q);
+    });
+
+    const cardByOrderId = new Map();
+    const cardByCardNo = new Map();
+    productionCards.forEach(c => {
+      if (c.orderId) {
+        const oIdStr = typeof c.orderId === 'object' && c.orderId !== null ? (c.orderId._id || c.orderId.id) : String(c.orderId);
+        if (oIdStr) cardByOrderId.set(String(oIdStr), c);
+      }
+      if (c.productionCardNo) {
+        cardByCardNo.set(String(c.productionCardNo).trim().toUpperCase(), c);
+      }
+    });
+
+    // Helper to extract series letter & sequence number from a code (e.g. "P136", "Set 1 - A001", "P-136")
+    const parseSeriesAndSeq = (str, fallbackSeries = 'A', fallbackSeq = 1) => {
+      if (!str || typeof str !== 'string') return { series: fallbackSeries, seq: fallbackSeq };
+      const trimmed = str.trim();
+      const match = trimmed.match(/(?:Set\s*\d+\s*[-:]\s*)?([A-Za-z]+)\s*[-_]?\s*(\d+)/i);
+      if (match) {
+        return {
+          series: match[1].toUpperCase(),
+          seq: parseInt(match[2], 10) || fallbackSeq
+        };
+      }
+      return { series: fallbackSeries, seq: fallbackSeq };
+    };
+
+    // Helper to format Date to DD-MM-YYYY string & ISO date
+    const formatDateDisplay = (d) => {
+      if (!d) return '—';
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return typeof d === 'string' ? d : '—';
+      const day = String(dt.getDate()).padStart(2, '0');
+      const month = String(dt.getMonth() + 1).padStart(2, '0');
+      const year = dt.getFullYear();
+      return `${day}-${month}-${year}`;
+    };
+
+    const rows = [];
+    const processedOrderIds = new Set();
+    const processedQuoteNumbers = new Set();
+    const processedCardNos = new Set();
+
+    // 1. Process from Orders
+    for (const ord of orders) {
+      processedOrderIds.add(String(ord._id));
+      if (ord.id) processedOrderIds.add(String(ord.id));
+
+      // Resolve Quotation
+      let linkedQuote = null;
+      if (ord.quotationRef) {
+        const qKey = String(ord.quotationRef).trim().toUpperCase();
+        linkedQuote = quoteByNumber.get(qKey) || null;
+      }
+      if (!linkedQuote && ord.id) {
+        linkedQuote = quoteByOrderRef.get(String(ord.id).trim().toUpperCase()) || null;
+      }
+      if (!linkedQuote && ord.orderNumber) {
+        linkedQuote = quoteByOrderRef.get(String(ord.orderNumber).trim().toUpperCase()) || null;
+      }
+      if (linkedQuote?.quotationNumber) {
+        processedQuoteNumbers.add(String(linkedQuote.quotationNumber).trim().toUpperCase());
+      }
+
+      // Resolve Production Card
+      let linkedCard = cardByOrderId.get(String(ord._id)) || (ord.id ? cardByOrderId.get(String(ord.id)) : null);
+      if (!linkedCard && ord.orderNumber) {
+        linkedCard = cardByCardNo.get(String(ord.orderNumber).trim().toUpperCase()) || null;
+      }
+      if (!linkedCard && ord.productionCardNo) {
+        linkedCard = cardByCardNo.get(String(ord.productionCardNo).trim().toUpperCase()) || null;
+      }
+      if (linkedCard?.productionCardNo) {
+        processedCardNos.add(String(linkedCard.productionCardNo).trim().toUpperCase());
+      }
+
+      // Extract Series & Sequence Number
+      let s = ord.series ? ord.series.toUpperCase() : null;
+      let seq = ord.sequenceNumber || null;
+      if (!s || !seq) {
+        const parsed = parseSeriesAndSeq(ord.productionCardNo || ord.orderNumber || ord.id, 'A', 1);
+        if (!s) s = parsed.series;
+        if (!seq) seq = parsed.seq;
+      }
+
+      const prodCardNo = ord.productionCardNo || linkedCard?.productionCardNo || ord.orderNumber || (s && seq ? `${s}${seq}` : ord.id);
+      if (prodCardNo) processedCardNos.add(String(prodCardNo).trim().toUpperCase());
+
+      // Quotation Number
+      const quoteNo = linkedQuote?.quotationNumber || ord.quotationRef || '—';
+      if (quoteNo !== '—') processedQuoteNumbers.add(String(quoteNo).trim().toUpperCase());
+
+      // Date of Quotation
+      const rawDate = linkedQuote?.date || ord.quotationDate || ord.date || ord.createdAt;
+      const displayDate = formatDateDisplay(rawDate);
+
+      // Customer Name
+      let customerName = '';
+      if (typeof ord.party === 'object' && ord.party !== null) {
+        customerName = ord.party.customerName || ord.party.name || ord.party.company || '';
+      } else if (typeof ord.party === 'string') {
+        customerName = ord.party;
+      }
+      customerName = customerName || ord.customerName || linkedCard?.customerName || linkedQuote?.party?.name || '—';
+
+      // Amount
+      const amount = Number(ord.totalAmount || ord.amount || linkedQuote?.totalAmount || 0) || 0;
+
+      // Employee who follows
+      const emp = (ord.employee || ord.followedBy || linkedCard?.employee || linkedCard?.followedBy || linkedQuote?.employee || linkedQuote?.followedBy || '').trim();
+
+      rows.push({
+        _id: ord._id,
+        orderId: ord.id || String(ord._id),
+        quotationId: linkedQuote?._id || null,
+        cardId: linkedCard?._id || null,
+        quotationDate: rawDate,
+        dateDisplay: displayDate,
+        quotationNumber: quoteNo,
+        productionCardNo: prodCardNo,
+        series: s,
+        sequenceNumber: seq,
+        customerName: customerName,
+        amount: amount,
+        employee: emp,
+        status: ord.status || linkedCard?.status || 'Active',
+        sourceType: 'Order'
+      });
+    }
+
+    // 2. Process standalone Quotations not mapped to an order
+    for (const q of quotations) {
+      const qNumKey = String(q.quotationNumber || '').trim().toUpperCase();
+      if (qNumKey && processedQuoteNumbers.has(qNumKey)) continue;
+
+      const parsed = parseSeriesAndSeq(q.orderRef, 'P', 1);
+      const prodCardNo = q.orderRef || '—';
+      const rawDate = q.date || q.createdAt;
+      const displayDate = formatDateDisplay(rawDate);
+
+      let customerName = '';
+      if (typeof q.party === 'object' && q.party !== null) {
+        customerName = q.party.customerName || q.party.name || q.party.company || '';
+      } else if (typeof q.party === 'string') {
+        customerName = q.party;
+      }
+      customerName = customerName || '—';
+
+      const emp = (q.employee || q.followedBy || '').trim();
+
+      rows.push({
+        _id: q._id,
+        orderId: null,
+        quotationId: q._id,
+        cardId: null,
+        quotationDate: rawDate,
+        dateDisplay: displayDate,
+        quotationNumber: q.quotationNumber || '—',
+        productionCardNo: prodCardNo,
+        series: parsed.series,
+        sequenceNumber: parsed.seq,
+        customerName: customerName,
+        amount: Number(q.totalAmount || q.amount || 0) || 0,
+        employee: emp,
+        status: q.status || 'Pending',
+        sourceType: 'Quotation'
+      });
+    }
+
+    // Collect all available series letters & employee suggestions
+    const seriesSet = new Set();
+    const seriesCounts = { All: rows.length };
+    const empSet = new Set(['DHANAPRAKASH', 'JANARTHARAJA']);
+
+    users.forEach(u => {
+      if (u.name) empSet.add(u.name.trim());
+    });
+
+    rows.forEach(r => {
+      if (r.series) {
+        seriesSet.add(r.series);
+        seriesCounts[r.series] = (seriesCounts[r.series] || 0) + 1;
+      }
+      if (r.employee) empSet.add(r.employee);
+    });
+
+    // Make sure standard tabs like 'A', 'B', 'P' are visible in availableSeries
+    ['A', 'B', 'P'].forEach(s => seriesSet.add(s));
+    const availableSeries = Array.from(seriesSet).sort();
+
+    // Filter by Series
+    let filtered = [...rows];
+    if (series && series !== 'All') {
+      const targetSeries = series.toUpperCase();
+      filtered = filtered.filter(r => r.series === targetSeries);
+    }
+
+    // Filter by Search Query
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      filtered = filtered.filter(r =>
+        (r.quotationNumber && r.quotationNumber.toLowerCase().includes(q)) ||
+        (r.productionCardNo && r.productionCardNo.toLowerCase().includes(q)) ||
+        (r.customerName && r.customerName.toLowerCase().includes(q)) ||
+        (r.employee && r.employee.toLowerCase().includes(q)) ||
+        (r.dateDisplay && r.dateDisplay.toLowerCase().includes(q))
+      );
+    }
+
+    // Filter by Date Range
+    if (fromDate) {
+      const fDate = new Date(fromDate);
+      filtered = filtered.filter(r => r.quotationDate && new Date(r.quotationDate) >= fDate);
+    }
+    if (toDate) {
+      const tDate = new Date(toDate);
+      tDate.setHours(23, 59, 59, 999);
+      filtered = filtered.filter(r => r.quotationDate && new Date(r.quotationDate) <= tDate);
+    }
+
+    // Filter by Employee
+    if (employee && employee !== 'All') {
+      const eTarget = employee.trim().toLowerCase();
+      filtered = filtered.filter(r => r.employee && r.employee.toLowerCase() === eTarget);
+    }
+
+    // Sorting
+    filtered.sort((a, b) => {
+      let comparison = 0;
+      if (sortBy === 'sequence' || sortBy === 'productionCardNo') {
+        const seqA = a.sequenceNumber || 0;
+        const seqB = b.sequenceNumber || 0;
+        comparison = seqA - seqB;
+      } else if (sortBy === 'date') {
+        const dateA = a.quotationDate ? new Date(a.quotationDate).getTime() : 0;
+        const dateB = b.quotationDate ? new Date(b.quotationDate).getTime() : 0;
+        comparison = dateA - dateB;
+      } else if (sortBy === 'customer') {
+        comparison = (a.customerName || '').localeCompare(b.customerName || '');
+      } else if (sortBy === 'amount') {
+        comparison = (a.amount || 0) - (b.amount || 0);
+      } else if (sortBy === 'employee') {
+        comparison = (a.employee || '').localeCompare(b.employee || '');
+      }
+      return sortOrder === 'desc' ? -comparison : comparison;
+    });
+
+    const summary = {
+      totalEntries: filtered.length,
+      totalAmount: filtered.reduce((sum, r) => sum + (r.amount || 0), 0),
+      seriesCounts,
+      uniqueEmployeesCount: new Set(filtered.map(r => r.employee).filter(Boolean)).size
+    };
+
+    res.json({
+      success: true,
+      summary,
+      availableSeries,
+      employees: Array.from(empSet).filter(Boolean).sort(),
+      entries: filtered
+    });
+  } catch (err) {
+    console.error('Series Report Error:', err.stack);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update employee who follows
+router.put('/series/:id/employee', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { employee } = req.body;
+    const empValue = String(employee || '').trim();
+
+    // 1. Try finding Order by _id or id or orderNumber
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      order = await Order.findById(id);
+    }
+    if (!order) {
+      order = await Order.findOne({ $or: [{ id }, { orderNumber: id }, { productionCardNo: id }] });
+    }
+
+    if (order) {
+      order.employee = empValue;
+      order.followedBy = empValue;
+      await order.save();
+
+      // Also update linked Quotation if any
+      if (order.quotationRef) {
+        await Quotation.updateMany(
+          { $or: [{ quotationNumber: order.quotationRef }, { orderRef: order.orderNumber }, { orderRef: order.id }] },
+          { $set: { employee: empValue, followedBy: empValue } }
+        );
+      }
+
+      // Also update linked ProductionCard if any
+      await ProductionCard.updateMany(
+        { $or: [{ orderId: order._id }, { orderId: order.id }, { productionCardNo: order.productionCardNo }] },
+        { $set: { employee: empValue, followedBy: empValue } }
+      );
+
+      return res.json({ success: true, message: 'Employee updated successfully', employee: empValue });
+    }
+
+    // 2. Try Quotation
+    let quote = null;
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      quote = await Quotation.findById(id);
+    }
+    if (!quote) {
+      quote = await Quotation.findOne({ quotationNumber: id });
+    }
+    if (quote) {
+      quote.employee = empValue;
+      quote.followedBy = empValue;
+      await quote.save();
+      return res.json({ success: true, message: 'Employee updated on Quotation', employee: empValue });
+    }
+
+    // 3. Try ProductionCard
+    let card = null;
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      card = await ProductionCard.findById(id);
+    }
+    if (card) {
+      card.employee = empValue;
+      card.followedBy = empValue;
+      await card.save();
+      return res.json({ success: true, message: 'Employee updated on Production Card', employee: empValue });
+    }
+
+    res.status(404).json({ error: 'Record not found to update employee' });
+  } catch (err) {
+    console.error('Update employee error:', err.stack);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add new series record directly
+router.post('/series', async (req, res) => {
+  try {
+    const {
+      quotationDate,
+      quotationNumber,
+      productionCardNo,
+      customerName,
+      amount,
+      employee
+    } = req.body;
+
+    if (!productionCardNo) {
+      return res.status(400).json({ error: 'Production Card No is required' });
+    }
+
+    const pCardNo = String(productionCardNo).trim().toUpperCase();
+    const custName = String(customerName || 'Customer Ref').trim();
+    const qNum = String(quotationNumber || `#${Date.now().toString().slice(-6)}`).trim();
+    const emp = String(employee || '').trim();
+    const amt = Number(amount) || 0;
+    const dateObj = quotationDate ? new Date(quotationDate) : new Date();
+
+    const match = pCardNo.match(/^([A-Za-z]+)(\d+)$/);
+    const series = match ? match[1].toUpperCase() : 'P';
+    const sequenceNumber = match ? parseInt(match[2], 10) : 1;
+    const formattedOrderId = `Set 1 - ${pCardNo}`;
+
+    // Ensure Customer
+    let customer = await Customer.findOne({ name: custName });
+    if (!customer) {
+      customer = await Customer.create({
+        name: custName,
+        phone: '—',
+        status: 'Active'
+      });
+    }
+
+    // Ensure Quotation
+    let quotation = await Quotation.findOne({ quotationNumber: qNum });
+    if (!quotation) {
+      quotation = await Quotation.create({
+        quotationNumber: qNum,
+        date: dateObj,
+        party: { name: custName },
+        totalAmount: amt,
+        subtotal: amt,
+        status: 'Converted',
+        orderRef: pCardNo,
+        employee: emp,
+        followedBy: emp
+      });
+    }
+
+    // Create Order
+    let order = await Order.findOne({
+      $or: [{ id: formattedOrderId }, { orderNumber: pCardNo }]
+    });
+    if (!order) {
+      order = await Order.create({
+        id: formattedOrderId,
+        orderNumber: pCardNo,
+        productionCardNo: pCardNo,
+        setNumber: 1,
+        setLabel: 'Set 1',
+        series,
+        sequenceNumber,
+        quotationRef: qNum,
+        quotationDate: dateObj,
+        date: dateObj.toISOString().split('T')[0],
+        party: { name: custName },
+        customerName: custName,
+        amount: amt,
+        totalAmount: amt,
+        amountPaid: amt,
+        paymentStatus: 'Paid',
+        status: 'In Production',
+        employee: emp,
+        followedBy: emp
+      });
+    }
+
+    // Create ProductionCard
+    let card = await ProductionCard.findOne({ productionCardNo: pCardNo });
+    if (!card) {
+      card = await ProductionCard.create({
+        orderId: order._id,
+        productionCardNo: pCardNo,
+        templateId: `${series}-SERIES-TEMPLATE`,
+        customerName: custName,
+        projectName: formattedOrderId,
+        templateName: 'Standard System',
+        productionDate: dateObj,
+        status: 'In Production',
+        qty: 1,
+        employee: emp,
+        followedBy: emp
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Series entry created successfully',
+      entry: {
+        _id: order._id,
+        productionCardNo: pCardNo,
+        quotationNumber: qNum,
+        customerName: custName,
+        amount: amt,
+        employee: emp,
+        series,
+        sequenceNumber,
+        dateDisplay: dateObj.toISOString().split('T')[0]
+      }
+    });
+  } catch (err) {
+    console.error('Create series entry error:', err.stack);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Trigger seed P-series on demand
+router.post('/series/seed', async (req, res) => {
+  try {
+    await seedPSeries();
+    res.json({ success: true, message: 'P-Series seeded successfully' });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

@@ -136,8 +136,11 @@ const TemplateSchema = new mongoose.Schema({
       range: { type: String, default: '' }, // e.g. "A1:E15"
       orientation: { type: String, enum: ['landscape', 'portrait'], default: 'landscape' },
       scaling: { type: String, default: 'fit-page' },
+      scalePercent: { type: Number, default: 100 },
+      tableWidthMode: { type: String, default: '100%' }, // '100%' | 'auto'
+      cellPaddingMode: { type: String, default: 'comfortable' }, // 'comfortable' | 'standard' | 'compact'
       showGridlines: { type: Boolean, default: true },
-      showHeaders: { type: Boolean, default: true },
+      showHeaders: { type: Boolean, default: false },
       includeMasterCard: { type: Boolean, default: false },
       includeHeader: { type: Boolean, default: true }
     }],

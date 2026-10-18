@@ -284,7 +284,11 @@ router.put('/excel/:id', upload.single('excelFile'), async (req, res) => {
 
     const normalizedHints = normalizeHints(inputHints);
     if (normalizedHints) template.googleSheet.inputHints = normalizedHints;
-    if (Array.isArray(defaultPrintPages)) template.googleSheet.defaultPrintPages = defaultPrintPages;
+    if (Array.isArray(defaultPrintPages)) {
+      template.googleSheet.defaultPrintPages = defaultPrintPages;
+      template.markModified('googleSheet.defaultPrintPages');
+      template.markModified('googleSheet');
+    }
     if (customCellStyles !== undefined) {
       template.googleSheet.customCellStyles = customCellStyles;
       template.markModified('googleSheet.customCellStyles');

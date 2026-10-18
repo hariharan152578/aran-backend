@@ -5,6 +5,8 @@ const QuotationSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
   party: { type: mongoose.Schema.Types.Mixed }, // Customer details
   deliveryAddress: { type: String },
+  employee: { type: String, default: '' },
+  followedBy: { type: String, default: '' },
   status: { type: String, enum: ['Draft', 'Pending', 'Sent', 'Approved', 'Rejected', 'Converted'], default: 'Pending' },
 
   lineItems: [{
