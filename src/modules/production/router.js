@@ -383,6 +383,31 @@ router.post('/cards', async (req, res) => {
         }
         if (!grpTemplate && template) grpTemplate = template;
 
+        const cleanGrpInputs = (() => {
+          if (!grp.inputs || typeof grp.inputs !== 'object') return {};
+          const clean = { ...grp.inputs };
+          delete clean.windows;
+          delete clean.results;
+          delete clean.bom;
+          delete clean.cuttingList;
+          delete clean.glassList;
+          delete clean.hardwareList;
+          delete clean.totalBomConsumption;
+          delete clean.sheetResult;
+          const dimKeys = [
+            'width', 'height', 'widthmm', 'heightmm', 'width_mm', 'height_mm',
+            'width (mm)', 'height (mm)', 'widthin', 'heightin', 'widtheighth', 'heighteighth',
+            'widthft', 'heightft', 'effectivewidthmm', 'effectiveheightmm', 'effective_width_mm', 'effective_height_mm',
+            'sqft', 'totalsqft', 'qty', 'quantity', 'w', 'h', 'wno', 'windowNo', 'w_no'
+          ];
+          Object.keys(clean).forEach(k => {
+            if (dimKeys.includes(k.toLowerCase().trim())) {
+              delete clean[k];
+            }
+          });
+          return clean;
+        })();
+
         const grpWindows = Array.isArray(grp.windows) && grp.windows.length > 0 ? grp.windows : [{
           wNo: 'W1',
           width: 0,
@@ -390,25 +415,39 @@ router.post('/cards', async (req, res) => {
           qty: 1
         }];
 
-        const lineItems = grpWindows.map((w, idx) => ({
-          windowNo: w.wNo || w.wno || `W${idx + 1}`,
-          qty: Number(w.qty) || 1,
-          measurements: {
-            width: Number(w.width || w.widthMM || 0),
-            height: Number(w.height || w.heightMM || 0),
-            widthMM: Number(w.width || w.widthMM || 0),
-            heightMM: Number(w.height || w.heightMM || 0),
-            'Width (mm)': Number(w.width || w.widthMM || 0),
-            'Height (mm)': Number(w.height || w.heightMM || 0),
-            qty: Number(w.qty) || 1,
-            ...(grp.inputs || {})
-          }
-        }));
+        const lineItems = grpWindows.map((w, idx) => {
+          const wWidth = Number(w.width || w.widthMM || w.Width || 0);
+          const wHeight = Number(w.height || w.heightMM || w.Height || 0);
+          const wQty = Number(w.qty || w.Qty || 1);
+          return {
+            windowNo: w.wNo || w.wno || `W${idx + 1}`,
+            qty: wQty,
+            measurements: {
+              ...cleanGrpInputs,
+              width: wWidth,
+              height: wHeight,
+              widthMM: wWidth,
+              heightMM: wHeight,
+              'Width (mm)': wWidth,
+              'Height (mm)': wHeight,
+              Width: wWidth,
+              Height: wHeight,
+              qty: wQty
+            }
+          };
+        });
 
         if (grpTemplate) {
           try {
             const cardOrderNo = typeof orderId === 'object' ? (orderId?._id || orderId?.id || '') : (orderId || '');
-            const out = await runEngine(grpTemplate, lineItems, { orderNo: cardOrderNo });
+            const windowsPayload = grpWindows.map((w, idx) => ({
+              width: Number(w.width || w.widthMM || w.Width || 0),
+              height: Number(w.height || w.heightMM || w.Height || 0),
+              qty: Number(w.qty || w.Qty || 1),
+              wNo: w.wNo || w.wno || `W${idx + 1}`,
+              sourceLabel: w.wNo || w.wno || `W${idx + 1}`
+            }));
+            const out = await runEngine(grpTemplate, lineItems, { orderNo: cardOrderNo, windows: windowsPayload });
             if (out) {
               grp.cuttingList = out.cuttingList || [];
               grp.glassList = out.glassList || [];
@@ -424,9 +463,9 @@ router.post('/cards', async (req, res) => {
 
                 return {
                   wno: w.wNo || w.wno || `W${i + 1}`,
-                  width: Number(w.width || w.widthMM || 0),
-                  height: Number(w.height || w.heightMM || 0),
-                  qty: Number(w.qty) || 1,
+                  width: Number(w.width || w.widthMM || w.Width || 0),
+                  height: Number(w.height || w.heightMM || w.Height || 0),
+                  qty: Number(w.qty || w.Qty || 1),
                   fixFrameBars: fixFramItem ? Number(fixFramItem.qty) : undefined,
                   opBeadBars: opBeadItem ? Number(opBeadItem.qty) : undefined,
                 };

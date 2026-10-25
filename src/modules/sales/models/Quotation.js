@@ -23,6 +23,8 @@ const QuotationSchema = new mongoose.Schema({
   }],
 
   profile: { type: String, default: '' },
+  measurementType: { type: String, default: 'Tape Measurement' },
+  rateType: { type: String, default: 'Rate / Sq.Ft' },
 
   extraCharges: {
     packingForwarding: {

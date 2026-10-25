@@ -328,7 +328,7 @@ export const getVersions = async (req, res) => {
 export const simulateTemplate = async (req, res) => {
   try {
     let { templateId } = req.params;
-    const { lineItems, orderNo = 'ORD-SIM', orderDate, date } = req.body;
+    const { lineItems, orderNo = 'ORD-SIM', orderDate, date, windows } = req.body;
     
     if (!lineItems || !Array.isArray(lineItems)) {
       return res.status(400).json({ message: 'lineItems array is required for simulation.' });
@@ -351,7 +351,7 @@ export const simulateTemplate = async (req, res) => {
     if (!tmpl) return res.status(404).json({ message: 'Template not found for simulation.' });
 
     const effectiveDate = orderDate || date || new Date().toISOString().split('T')[0];
-    const simulationResult = await runEngine(tmpl, lineItems, { orderNo, orderDate: effectiveDate, date: effectiveDate });
+    const simulationResult = await runEngine(tmpl, lineItems, { orderNo, orderDate: effectiveDate, date: effectiveDate, windows });
     res.json(simulationResult);
   } catch (error) {
     console.error('Simulation Error:', error);
