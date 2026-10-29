@@ -38,6 +38,7 @@ const OrderSchema = new mongoose.Schema({
     qty: { type: Number, default: 1 },
     discount: { type: Number, default: 0 },
     tax: { type: Number, default: 18 },
+    amount: { type: Number, default: 0 },
     measurements: { type: mongoose.Schema.Types.Mixed },
     dynamicData: { type: mongoose.Schema.Types.Mixed }
   }],
@@ -46,7 +47,10 @@ const OrderSchema = new mongoose.Schema({
   discounts: [{ label: { type: String }, amount: { type: Number } }],
   subtotal: { type: Number, default: 0 },
   totalSqFt: { type: Number, default: 0 },
-  totalQty: { type: Number, default: 0 }
+  totalQty: { type: Number, default: 0 },
+  taxRate: { type: Number, default: 18 },
+  taxAmount: { type: Number, default: 0 },
+  roundOff: { type: Number, default: 0 }
 }, { timestamps: true });
 
 export default mongoose.model('Order', OrderSchema);

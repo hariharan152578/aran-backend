@@ -834,6 +834,15 @@ router.put('/quotations/:id', async (req, res) => {
         if (quotation.totalQty != null) {
           order.totalQty = quotation.totalQty;
         }
+        if (quotation.taxRate != null) {
+          order.taxRate = quotation.taxRate;
+        }
+        if (quotation.taxAmount != null) {
+          order.taxAmount = quotation.taxAmount;
+        }
+        if (quotation.roundOff != null) {
+          order.roundOff = quotation.roundOff;
+        }
 
         // Recalculate payment status on the order
         const paid = Number(order.amountPaid || 0);
