@@ -968,6 +968,7 @@ router.get('/accessory-defaults', async (req, res) => {
     let settings = await QuotationSettings.findOne({ key: 'default_accessories' });
     if (!settings) {
       settings = {
+        defaultTaxRate: 0,
         packingForwarding: { qty: 0, rate: 0, amount: 0 },
         erectionScrew: { qty: 0, rate: 0, amount: 0 },
         foam: { qty: 0, rate: 0, amount: 0 },
@@ -983,7 +984,7 @@ router.get('/accessory-defaults', async (req, res) => {
 
 router.post('/accessory-defaults', async (req, res) => {
   try {
-    const { packingForwarding, erectionScrew, foam, silicon, customAccessories } = req.body;
+    const { defaultTaxRate, packingForwarding, erectionScrew, foam, silicon, customAccessories } = req.body;
     const sanitizedCustom = Array.isArray(customAccessories) ? customAccessories.map(ca => {
       const type = ca.type || 'rate';
       const qty = type === 'rate' ? (Number(ca.qty) || 0) : 1;
@@ -1003,6 +1004,7 @@ router.post('/accessory-defaults', async (req, res) => {
       { key: 'default_accessories' },
       {
         key: 'default_accessories',
+        ...(defaultTaxRate !== undefined ? { defaultTaxRate: Number(defaultTaxRate) || 0 } : {}),
         packingForwarding: {
           qty: Number(packingForwarding?.qty) || 0,
           rate: Number(packingForwarding?.rate) || 0,

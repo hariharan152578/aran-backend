@@ -16,7 +16,7 @@ const QuotationSchema = new mongoose.Schema({
     price: { type: Number, default: 0 },
     qty: { type: Number, default: 1 },
     discount: { type: Number, default: 0 }, // percentage
-    tax: { type: Number, default: 18 }, // percentage
+    tax: { type: Number, default: 0 }, // percentage
     amount: { type: Number, default: 0 },
     measurements: { type: mongoose.Schema.Types.Mixed }, // e.g. { Width: 1500, Height: 1200 }
     dynamicData: { type: mongoose.Schema.Types.Mixed }, // Stores simulation preview, bom, results
@@ -73,7 +73,7 @@ const QuotationSchema = new mongoose.Schema({
   subtotal: { type: Number, default: 0 },
   totalSqFt: { type: Number, default: 0 },
   totalQty: { type: Number, default: 0 },
-  taxRate: { type: Number, default: 18 },
+  taxRate: { type: Number, default: 0 },
   taxAmount: { type: Number, default: 0 },
   roundOff: { type: Number, default: 0 },
   autoRound: { type: Boolean, default: false },

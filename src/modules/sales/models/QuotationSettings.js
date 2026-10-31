@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const QuotationSettingsSchema = new mongoose.Schema({
   key: { type: String, default: 'default_accessories', unique: true },
+  defaultTaxRate: { type: Number, default: 0 },
   packingForwarding: {
     qty: { type: Number, default: 0 },
     rate: { type: Number, default: 0 },
