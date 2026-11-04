@@ -34,7 +34,13 @@ const OrderSchema = new mongoose.Schema({
     templateCode: { type: String },
     templateName: { type: String },
     name: { type: String }, // Used as fallback in frontend
+    code: { type: String },
+    id: { type: String },
     price: { type: Number, default: 0 },
+    rate: { type: Number, default: 0 },
+    rateType: { type: String, default: 'Rate / Sq.Ft' },
+    isPieceRate: { type: Boolean, default: false },
+    rateMode: { type: String, default: 'sqft' },
     qty: { type: Number, default: 1 },
     discount: { type: Number, default: 0 },
     tax: { type: Number, default: 0 },
