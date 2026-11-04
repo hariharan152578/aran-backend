@@ -132,6 +132,8 @@ const TemplateSchema = new mongoose.Schema({
     defaultPrintPages: [{
       pageNumber: { type: Number },
       title: { type: String, default: '' },
+      pageType: { type: String, default: 'standard' }, // 'standard' | 'glass' | 'master-card'
+      isGlassPage: { type: Boolean, default: false },
       sheetName: { type: String, default: '' },
       range: { type: String, default: '' }, // e.g. "A1:E15"
       orientation: { type: String, enum: ['landscape', 'portrait'], default: 'landscape' },
