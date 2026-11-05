@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const ProductionCardSchema = new mongoose.Schema({
   orderId: { type: mongoose.Schema.Types.Mixed, required: true },
+  orderNo: { type: String },
   templateId: { type: mongoose.Schema.Types.Mixed, required: true },
   customerName: { type: String },
   projectName: { type: String },

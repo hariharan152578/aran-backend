@@ -319,19 +319,17 @@ export async function runExcelEngine(template, payload = {}) {
     ? (typeof rawDate === 'string' && rawDate.includes('T') ? rawDate.split('T')[0] : String(rawDate))
     : new Date().toISOString().split('T')[0];
 
-  const dateCellMatch = findDateCell(ws);
-  if (dateCellMatch) {
-    if (ws[dateCellMatch]) {
-      delete ws[dateCellMatch].f;
-    }
-    ws[dateCellMatch] = { t: 's', v: dateStr, w: dateStr };
-  }
-
-  // Optional order number
   const orderNo = payload.orderNo || 'ORD-SIM';
-  const orderCellMatch = findOrderNoCell(ws);
-  if (orderCellMatch) {
-    ws[orderCellMatch] = { t: 's', v: String(orderNo), w: String(orderNo) };
+
+  // Inject date and order number across all matching header cells in calculation sheet
+  injectDateCells(ws, dateStr);
+  injectOrderNoCells(ws, String(orderNo));
+
+  // Also inject on material sheet if present
+  const materialSheetName = gs.materialSheetName;
+  if (materialSheetName && wb.Sheets[materialSheetName]) {
+    injectDateCells(wb.Sheets[materialSheetName], dateStr);
+    injectOrderNoCells(wb.Sheets[materialSheetName], String(orderNo));
   }
 
   // In-memory formula calculation across all sheets
@@ -339,6 +337,12 @@ export async function runExcelEngine(template, payload = {}) {
     formula(wb);
   } catch (calcErr) {
     warnings.push(`Formula evaluation notice: ${calcErr.message}`);
+  }
+
+  // Finalize header cells (ensures any formula cell next to DATE or ORDER NO that evaluated to empty/0 receives the actual value)
+  finalizeHeaderCells(ws, dateStr, String(orderNo));
+  if (materialSheetName && wb.Sheets[materialSheetName]) {
+    finalizeHeaderCells(wb.Sheets[materialSheetName], dateStr, String(orderNo));
   }
 
   // Sanitize formula outputs (xlsx-calc leaves t=undefined or v as Date object)
@@ -370,7 +374,6 @@ export async function runExcelEngine(template, payload = {}) {
 
   // Read material grid if material tab configured
   let materialGrid = null;
-  const materialSheetName = gs.materialSheetName;
   if (materialSheetName && wb.Sheets[materialSheetName]) {
     const matValues = XLSX.utils.sheet_to_json(wb.Sheets[materialSheetName], { header: 1, defval: '' });
     materialGrid = {
@@ -488,24 +491,94 @@ function findDateCell(ws) {
 }
 
 /**
- * Searches for an "Order No" label cell and returns the cell address to write the order number.
+ * Injects order date into all cells adjacent to "DATE" labels across a worksheet.
+ * Respects merged label cells by finding the cell immediately to the right of the merge range.
  */
-function findOrderNoCell(ws) {
-  let fallback = null;
+function injectDateCells(ws, dateStr) {
+  if (!dateStr || !ws) return;
+  const dateRegex = /(^|[\s_])date([\s_:]|$)/i;
+  const merges = ws['!merges'] || [];
+
   for (const addr in ws) {
     if (addr.startsWith('!')) continue;
     const cell = ws[addr];
-    if (cell && typeof cell.v === 'string' && /order\s*no/i.test(cell.v)) {
+    if (cell && typeof cell.v === 'string' && dateRegex.test(cell.v.trim())) {
       const decoded = XLSX.utils.decode_cell(addr);
-      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: decoded.c + 1 });
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
       const targetCell = ws[targetAddr];
-      // Do not write into a cell that already has a formula (e.g. =D1)
-      if (targetCell?.f) {
-        if (!fallback) fallback = targetAddr;
-        continue;
+
+      if (!targetCell || !targetCell.f || /^=?today\(\s*\)$/i.test(targetCell.f.trim())) {
+        ws[targetAddr] = { t: 's', v: String(dateStr), w: String(dateStr) };
       }
-      return targetAddr;
     }
   }
-  return fallback;
+}
+
+/**
+ * Injects order number into all cells adjacent to "ORDER NO" labels across a worksheet.
+ * Respects merged label cells by finding the cell immediately to the right of the merge range.
+ */
+function injectOrderNoCells(ws, orderNo) {
+  if (!orderNo || !ws) return;
+  const orderRegex = /(^|[\s_])order\s*(no|num|number|#)([\s_:]|$)/i;
+  const merges = ws['!merges'] || [];
+
+  for (const addr in ws) {
+    if (addr.startsWith('!')) continue;
+    const cell = ws[addr];
+    if (cell && typeof cell.v === 'string' && orderRegex.test(cell.v.trim())) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const targetCell = ws[targetAddr];
+
+      // If target cell does not have a formula, write orderNo directly
+      if (!targetCell || !targetCell.f) {
+        ws[targetAddr] = { t: 's', v: String(orderNo), w: String(orderNo) };
+      }
+    }
+  }
+}
+
+/**
+ * Post-formula sweep: ensures any cell next to DATE or ORDER NO that evaluated to empty, '0', 0, or null
+ * receives the actual date or order number.
+ */
+function finalizeHeaderCells(ws, dateStr, orderNo) {
+  if (!ws) return;
+  const dateRegex = /(^|[\s_])date([\s_:]|$)/i;
+  const orderRegex = /(^|[\s_])order\s*(no|num|number|#)([\s_:]|$)/i;
+  const merges = ws['!merges'] || [];
+
+  for (const addr in ws) {
+    if (addr.startsWith('!')) continue;
+    const cell = ws[addr];
+    if (!cell || typeof cell.v !== 'string') continue;
+    const text = cell.v.trim();
+
+    if (dateStr && dateRegex.test(text)) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const target = ws[targetAddr];
+      if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
+        ws[targetAddr] = { t: 's', v: String(dateStr), w: String(dateStr) };
+      }
+    }
+
+    if (orderNo && orderRegex.test(text)) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const target = ws[targetAddr];
+      if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
+        ws[targetAddr] = { t: 's', v: String(orderNo), w: String(orderNo) };
+      }
+    }
+  }
 }

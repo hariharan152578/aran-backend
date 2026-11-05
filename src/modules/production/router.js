@@ -126,6 +126,10 @@ const populateCard = async (card) => {
         amount: 0
       };
     }
+
+    const resolvedOrderNo = card.orderNo || cardObj.orderId?.id || cardObj.orderId?.orderNumber || cardObj.orderId?.orderNo || '';
+    cardObj.orderNo = resolvedOrderNo;
+    cardObj.orderNumber = cardObj.orderId?.orderNumber || resolvedOrderNo;
   }
 
   // Populate templateId
@@ -368,6 +372,27 @@ router.post('/cards', async (req, res) => {
 
     const processedMeasurements = measurements ? JSON.parse(JSON.stringify(measurements)) : {};
 
+    // Resolve clean human Order Number (e.g. "Set 1 - A014" or "A014")
+    let resolvedOrderDoc = null;
+    const rawOrderKey = typeof orderId === 'object' && orderId !== null
+      ? (orderId.id || orderId.orderNumber || orderId._id)
+      : orderId;
+    if (rawOrderKey) {
+      try {
+        const queryOr = [{ id: rawOrderKey }, { orderNumber: rawOrderKey }];
+        if (mongoose.Types.ObjectId.isValid(rawOrderKey)) {
+          queryOr.push({ _id: rawOrderKey });
+        }
+        resolvedOrderDoc = await Order.findOne({ $or: queryOr }).lean();
+      } catch (e) {}
+    }
+
+    const cardOrderNo = req.body.orderNo || req.body.orderNumber
+      || (typeof orderId === 'object' && orderId !== null ? (orderId.id || orderId.orderNumber || orderId.orderNo) : '')
+      || resolvedOrderDoc?.id || resolvedOrderDoc?.orderNumber || resolvedOrderDoc?.orderNo
+      || (typeof orderId === 'string' && !/^[0-9a-fA-F]{24}$/.test(orderId) ? orderId : '')
+      || '';
+
     // ── Evaluate engine calculations for all groups/templates and store in DB ──
     if (processedMeasurements.groups && Array.isArray(processedMeasurements.groups) && processedMeasurements.groups.length > 0) {
       for (const grp of processedMeasurements.groups) {
@@ -439,7 +464,7 @@ router.post('/cards', async (req, res) => {
 
         if (grpTemplate) {
           try {
-            const cardOrderNo = typeof orderId === 'object' ? (orderId?._id || orderId?.id || '') : (orderId || '');
+            const effectiveGrpOrderNo = grp.orderNo || cardOrderNo;
             const windowsPayload = grpWindows.map((w, idx) => ({
               width: Number(w.width || w.widthMM || w.Width || 0),
               height: Number(w.height || w.heightMM || w.Height || 0),
@@ -447,14 +472,14 @@ router.post('/cards', async (req, res) => {
               wNo: w.wNo || w.wno || `W${idx + 1}`,
               sourceLabel: w.wNo || w.wno || `W${idx + 1}`
             }));
-            const out = await runEngine(grpTemplate, lineItems, { orderNo: cardOrderNo, windows: windowsPayload });
+            const out = await runEngine(grpTemplate, lineItems, { orderNo: effectiveGrpOrderNo, windows: windowsPayload });
             if (out) {
               grp.cuttingList = out.cuttingList || [];
               grp.glassList = out.glassList || [];
               grp.hardwareList = out.hardwareList || [];
               grp.totalBomConsumption = out.totalBomConsumption || [];
               grp.sheetResult = out.sheetResult || null;
-              grp.orderNo = cardOrderNo;
+              grp.orderNo = effectiveGrpOrderNo;
               grp.results = grpWindows.map((w, i) => {
                 const fixFramItem = (out.cuttingList || []).find(c => (c.materialName || '').toLowerCase().includes('fram') || (c.materialName || '').toLowerCase().includes('casment'))
                   || (out.totalBomConsumption || []).find(b => (b.materialName || '').toLowerCase().includes('fram') || (b.materialName || '').toLowerCase().includes('casment'));
@@ -483,7 +508,6 @@ router.post('/cards', async (req, res) => {
       }
     } else if (template) {
       try {
-        const cardOrderNo = typeof orderId === 'object' ? (orderId?._id || orderId?.id || '') : (orderId || '');
         const out = await runEngine(template, [
           {
             qty: qty || 1,
@@ -497,6 +521,7 @@ router.post('/cards', async (req, res) => {
           totalBomRes = out.totalBomConsumption || [];
           if (processedMeasurements) {
             processedMeasurements.sheetResult = out.sheetResult || null;
+            processedMeasurements.orderNo = cardOrderNo;
           }
         }
       } catch (e) {
@@ -506,6 +531,7 @@ router.post('/cards', async (req, res) => {
 
     const card = new ProductionCard({
       orderId,
+      orderNo: cardOrderNo,
       templateId: cardTemplateId,
       customerName: customerName || (template ? template.name : ''),
       projectName: projectName || orderId,
