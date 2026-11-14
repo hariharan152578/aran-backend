@@ -27,7 +27,8 @@ const QuotationSchema = new mongoose.Schema({
     amount: { type: Number, default: 0 },
     measurements: { type: mongoose.Schema.Types.Mixed }, // e.g. { Width: 1500, Height: 1200 }
     dynamicData: { type: mongoose.Schema.Types.Mixed }, // Stores simulation preview, bom, results
-    customFields: { type: mongoose.Schema.Types.Mixed } // User inputs for dynamic category custom columns
+    customFields: { type: mongoose.Schema.Types.Mixed }, // User inputs for dynamic category custom columns
+    glass: { type: String, default: '' }
   }],
 
   profile: { type: String, default: '' },
