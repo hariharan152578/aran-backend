@@ -31,6 +31,8 @@ const QuotationSchema = new mongoose.Schema({
   }],
 
   profile: { type: String, default: '' },
+  category: { type: String, default: '' },
+  customColumns: [{ type: mongoose.Schema.Types.Mixed }],
   measurementType: { type: String, default: 'Tape Measurement' },
   rateType: { type: String, default: 'Rate / Sq.Ft' },
 
