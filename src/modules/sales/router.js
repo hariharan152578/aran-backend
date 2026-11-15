@@ -155,7 +155,7 @@ router.get('/quotation-categories', async (req, res) => {
 
 router.post('/quotation-categories', async (req, res) => {
   try {
-    const { name, termsAndConditions, customColumns } = req.body;
+    const { name, termsAndConditions, customColumns, hasGlass } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
 
     const existing = await QuotationCategory.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
@@ -166,12 +166,29 @@ router.post('/quotation-categories', async (req, res) => {
     const category = new QuotationCategory({
       name,
       termsAndConditions: termsAndConditions || '',
+      hasGlass: Boolean(hasGlass || (customColumns || []).some(c => c.isGlass || c.type === 'glass' || String(c.name || '').toLowerCase() === 'glass')),
       customColumns: customColumns || []
     });
     await category.save();
     res.status(201).json(category);
   } catch (err) {
     res.status(500).json({ error: 'Failed to create quotation category', details: err.message });
+  }
+});
+
+router.put('/quotation-categories/:id', async (req, res) => {
+  try {
+    const { name, termsAndConditions, customColumns, hasGlass } = req.body;
+    const category = await QuotationCategory.findById(req.params.id);
+    if (!category) return res.status(404).json({ error: 'Quotation category not found' });
+    if (name) category.name = name;
+    if (termsAndConditions !== undefined) category.termsAndConditions = termsAndConditions;
+    if (customColumns !== undefined) category.customColumns = customColumns;
+    category.hasGlass = Boolean(hasGlass || (category.customColumns || []).some(c => c.isGlass || c.type === 'glass' || String(c.name || '').toLowerCase() === 'glass'));
+    await category.save();
+    res.json(category);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update quotation category', details: err.message });
   }
 });
 
@@ -182,6 +199,36 @@ router.delete('/quotation-categories/:id', async (req, res) => {
     res.json({ message: 'Quotation category deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete quotation category', details: err.message });
+  }
+});
+
+// MASTER GLASS OPTIONS (Separate Dropdown Configuration)
+router.get('/glass-options', async (req, res) => {
+  try {
+    let settings = await QuotationSettings.findOne({ key: 'default_accessories' });
+    const defaultOptions = ['Clear Glass', 'Pinnet', 'Frosted', 'Tinted', 'Toughened', 'Reflective Blue'];
+    const options = (settings?.glassOptions && settings.glassOptions.length > 0) ? settings.glassOptions : defaultOptions;
+    res.json({ options });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch glass options', details: err.message });
+  }
+});
+
+router.post('/glass-options', async (req, res) => {
+  try {
+    const { options } = req.body;
+    if (!Array.isArray(options)) {
+      return res.status(400).json({ error: 'Options must be an array of strings' });
+    }
+    const cleanOptions = Array.from(new Set(options.map(o => String(o || '').trim()).filter(Boolean)));
+    const settings = await QuotationSettings.findOneAndUpdate(
+      { key: 'default_accessories' },
+      { $set: { glassOptions: cleanOptions } },
+      { upsert: true, new: true }
+    );
+    res.json({ options: settings.glassOptions });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save glass options', details: err.message });
   }
 });
 

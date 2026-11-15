@@ -351,7 +351,11 @@ export const simulateTemplate = async (req, res) => {
     if (!tmpl) return res.status(404).json({ message: 'Template not found for simulation.' });
 
     const effectiveDate = orderDate || date || new Date().toISOString().split('T')[0];
-    const simulationResult = await runEngine(tmpl, lineItems, { orderNo, orderDate: effectiveDate, date: effectiveDate, windows });
+    const effectiveGlass = req.body.glass
+      || req.body.glassType
+      || (lineItems && (lineItems[0]?.glass || lineItems[0]?.customFields?.['GLASS'] || lineItems[0]?.customFields?.['Glass Type'] || lineItems[0]?.customFields?.['Glass'] || lineItems[0]?.customFields?.['glass']))
+      || '';
+    const simulationResult = await runEngine(tmpl, lineItems, { orderNo, orderDate: effectiveDate, date: effectiveDate, windows, glass: effectiveGlass });
     res.json(simulationResult);
   } catch (error) {
     console.error('Simulation Error:', error);

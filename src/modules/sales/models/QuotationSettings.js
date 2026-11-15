@@ -30,7 +30,11 @@ const QuotationSettingsSchema = new mongoose.Schema({
     qty: { type: Number, default: 0 },
     rate: { type: Number, default: 0 },
     amount: { type: Number, default: 0 }
-  }]
+  }],
+  glassOptions: {
+    type: [String],
+    default: ['Clear Glass', 'Pinnet', 'Frosted', 'Tinted', 'Toughened', 'Reflective Blue']
+  }
 }, { timestamps: true });
 
 export default mongoose.model('QuotationSettings', QuotationSettingsSchema);

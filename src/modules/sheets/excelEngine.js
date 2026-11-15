@@ -320,16 +320,26 @@ export async function runExcelEngine(template, payload = {}) {
     : new Date().toISOString().split('T')[0];
 
   const orderNo = payload.orderNo || 'ORD-SIM';
+  const glassVal = payload.glass
+    || payload.glassType
+    || (payload.lineItems && (payload.lineItems[0]?.glass || payload.lineItems[0]?.customFields?.['GLASS'] || payload.lineItems[0]?.customFields?.['Glass Type'] || payload.lineItems[0]?.customFields?.['Glass'] || payload.lineItems[0]?.customFields?.['glass']))
+    || '';
 
-  // Inject date and order number across all matching header cells in calculation sheet
+  // Inject date, order number and glass across all matching header cells in calculation sheet
   injectDateCells(ws, dateStr);
   injectOrderNoCells(ws, String(orderNo));
+  if (glassVal) {
+    injectGlassCells(ws, String(glassVal), payload);
+  }
 
   // Also inject on material sheet if present
   const materialSheetName = gs.materialSheetName;
   if (materialSheetName && wb.Sheets[materialSheetName]) {
     injectDateCells(wb.Sheets[materialSheetName], dateStr);
     injectOrderNoCells(wb.Sheets[materialSheetName], String(orderNo));
+    if (glassVal) {
+      injectGlassCells(wb.Sheets[materialSheetName], String(glassVal), payload);
+    }
   }
 
   // In-memory formula calculation across all sheets
@@ -339,10 +349,10 @@ export async function runExcelEngine(template, payload = {}) {
     warnings.push(`Formula evaluation notice: ${calcErr.message}`);
   }
 
-  // Finalize header cells (ensures any formula cell next to DATE or ORDER NO that evaluated to empty/0 receives the actual value)
-  finalizeHeaderCells(ws, dateStr, String(orderNo));
+  // Finalize header cells (ensures any formula cell next to DATE, ORDER NO or GLASS that evaluated to empty/0 receives the actual value)
+  finalizeHeaderCells(ws, dateStr, String(orderNo), String(glassVal), payload);
   if (materialSheetName && wb.Sheets[materialSheetName]) {
-    finalizeHeaderCells(wb.Sheets[materialSheetName], dateStr, String(orderNo));
+    finalizeHeaderCells(wb.Sheets[materialSheetName], dateStr, String(orderNo), String(glassVal), payload);
   }
 
   // Sanitize formula outputs (xlsx-calc leaves t=undefined or v as Date object)
@@ -544,13 +554,72 @@ function injectOrderNoCells(ws, orderNo) {
 }
 
 /**
- * Post-formula sweep: ensures any cell next to DATE or ORDER NO that evaluated to empty, '0', 0, or null
- * receives the actual date or order number.
+ * Injects glass specification into cells adjacent to "GLASS" labels and into
+ * the "Type" column of any Glass Schedule table across a worksheet.
  */
-function finalizeHeaderCells(ws, dateStr, orderNo) {
+function injectGlassCells(ws, glassVal, payload = {}) {
+  if (!glassVal || !ws) return;
+  const glassRegex = /(^|[\s_])glass(\s*type)?([\s_:]|$)/i;
+  const merges = ws['!merges'] || [];
+
+  for (const addr in ws) {
+    if (addr.startsWith('!')) continue;
+    const cell = ws[addr];
+    if (!cell || typeof cell.v !== 'string') continue;
+    const text = cell.v.trim();
+
+    // 1. Label cell (e.g. "Glass" or "Glass Type" in header section)
+    if (glassRegex.test(text) && !/(width|height|size|sqft|sq\.ft|nos|qty|cut|pane|thick|area|sched)/i.test(text)) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const targetCell = ws[targetAddr];
+
+      if (!targetCell || !targetCell.f) {
+        ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
+      }
+    }
+
+    // 2. Table Column Header: "Type" in a Glass Schedule section (e.g. S5 "Type" near Width/Height/Nos/Sq.ft)
+    if (/^type$/i.test(text) || /^glass\s*type$/i.test(text)) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const colLetter = columnToLetter(decoded.c + 1);
+      const lineItems = payload.lineItems || [];
+
+      for (let r = decoded.r + 2; r <= decoded.r + 30; r++) {
+        const rowFirstCell = ws['A' + r] || ws[columnToLetter(Math.max(1, decoded.c - 3)) + r];
+        const rowText = String(rowFirstCell?.v || '').toLowerCase();
+        if (rowText.includes('total') || rowText.includes('sum')) break;
+
+        const widthCell = ws[columnToLetter(decoded.c - 2) + r] || ws[columnToLetter(decoded.c - 3) + r];
+        const wNoCell = ws[columnToLetter(decoded.c - 4) + r] || ws['A' + r];
+        const hasRowData = (widthCell && widthCell.v && widthCell.v !== 0 && widthCell.v !== '0') ||
+                           (wNoCell && wNoCell.v && wNoCell.v !== '' && wNoCell.v !== 0);
+
+        if (hasRowData) {
+          const typeAddr = colLetter + r;
+          const targetCell = ws[typeAddr];
+          if (!targetCell || !targetCell.f) {
+            const winIdx = (r - (decoded.r + 2));
+            const rowGlass = lineItems[winIdx]?.glass || lineItems[winIdx]?.customFields?.['GLASS'] || lineItems[winIdx]?.customFields?.['Glass Type'] || glassVal;
+            ws[typeAddr] = { t: 's', v: String(rowGlass), w: String(rowGlass) };
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Post-formula sweep: ensures any cell next to DATE, ORDER NO or GLASS that evaluated to empty, '0', 0, or null
+ * receives the actual date, order number or glass type.
+ */
+function finalizeHeaderCells(ws, dateStr, orderNo, glassVal, payload = {}) {
   if (!ws) return;
   const dateRegex = /(^|[\s_])date([\s_:]|$)/i;
   const orderRegex = /(^|[\s_])order\s*(no|num|number|#)([\s_:]|$)/i;
+  const glassRegex = /(^|[\s_])glass(\s*type)?([\s_:]|$)/i;
   const merges = ws['!merges'] || [];
 
   for (const addr in ws) {
@@ -578,6 +647,44 @@ function finalizeHeaderCells(ws, dateStr, orderNo) {
       const target = ws[targetAddr];
       if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
         ws[targetAddr] = { t: 's', v: String(orderNo), w: String(orderNo) };
+      }
+    }
+
+    if (glassVal && glassRegex.test(text) && !/(width|height|size|sqft|sq\.ft|nos|qty|cut|pane|thick|area|sched)/i.test(text)) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const target = ws[targetAddr];
+      if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
+        ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
+      }
+    }
+
+    if (glassVal && (/^type$/i.test(text) || /^glass\s*type$/i.test(text))) {
+      const decoded = XLSX.utils.decode_cell(addr);
+      const colLetter = columnToLetter(decoded.c + 1);
+      const lineItems = payload.lineItems || [];
+
+      for (let r = decoded.r + 2; r <= decoded.r + 30; r++) {
+        const rowFirstCell = ws['A' + r] || ws[columnToLetter(Math.max(1, decoded.c - 3)) + r];
+        const rowText = String(rowFirstCell?.v || '').toLowerCase();
+        if (rowText.includes('total') || rowText.includes('sum')) break;
+
+        const widthCell = ws[columnToLetter(decoded.c - 2) + r] || ws[columnToLetter(decoded.c - 3) + r];
+        const wNoCell = ws[columnToLetter(decoded.c - 4) + r] || ws['A' + r];
+        const hasRowData = (widthCell && widthCell.v && widthCell.v !== 0 && widthCell.v !== '0') ||
+                           (wNoCell && wNoCell.v && wNoCell.v !== '' && wNoCell.v !== 0);
+
+        if (hasRowData) {
+          const typeAddr = colLetter + r;
+          const target = ws[typeAddr];
+          if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
+            const winIdx = (r - (decoded.r + 2));
+            const rowGlass = lineItems[winIdx]?.glass || lineItems[winIdx]?.customFields?.['GLASS'] || lineItems[winIdx]?.customFields?.['Glass Type'] || glassVal;
+            ws[typeAddr] = { t: 's', v: String(rowGlass), w: String(rowGlass) };
+          }
+        }
       }
     }
   }
