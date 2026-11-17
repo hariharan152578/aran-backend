@@ -46,8 +46,14 @@ const OrderSchema = new mongoose.Schema({
     tax: { type: Number, default: 0 },
     amount: { type: Number, default: 0 },
     measurements: { type: mongoose.Schema.Types.Mixed },
-    dynamicData: { type: mongoose.Schema.Types.Mixed }
+    dynamicData: { type: mongoose.Schema.Types.Mixed },
+    customFields: { type: mongoose.Schema.Types.Mixed },
+    glass: { type: String, default: '' },
+    glassType: { type: String, default: '' }
   }],
+  profile: { type: String, default: '' },
+  category: { type: String, default: '' },
+  customColumns: [{ type: mongoose.Schema.Types.Mixed }],
   extraCharges: { type: mongoose.Schema.Types.Mixed },
   additionalCharges: [{ label: { type: String }, amount: { type: Number } }],
   discounts: [{ label: { type: String }, amount: { type: Number } }],

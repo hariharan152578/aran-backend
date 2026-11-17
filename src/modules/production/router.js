@@ -24,6 +24,25 @@ const extractIdString = (id) => {
   return str === '[object Object]' ? '' : str;
 };
 
+const extractGlassFromObj = (obj) => {
+  if (!obj || typeof obj !== 'object') return '';
+  if (obj.glass && String(obj.glass).trim()) return String(obj.glass).trim();
+  if (obj.glassType && String(obj.glassType).trim()) return String(obj.glassType).trim();
+  const cf = obj.customFields;
+  if (cf && typeof cf === 'object') {
+    for (const key of Object.keys(cf)) {
+      if (/glass/i.test(key) && cf[key] !== undefined && cf[key] !== null && String(cf[key]).trim()) {
+        return String(cf[key]).trim();
+      }
+    }
+  }
+  if (obj.measurements && typeof obj.measurements === 'object') {
+    if (obj.measurements.glass && String(obj.measurements.glass).trim()) return String(obj.measurements.glass).trim();
+    if (obj.measurements.glassType && String(obj.measurements.glassType).trim()) return String(obj.measurements.glassType).trim();
+  }
+  return '';
+};
+
 // Custom population helper to avoid Mongoose CastErrors when IDs are strings
 const populateCard = async (card) => {
   const cardObj = card.toObject();
@@ -73,11 +92,71 @@ const populateCard = async (card) => {
             if ((!orderObj.additionalCharges || orderObj.additionalCharges.length === 0) && quotDoc.additionalCharges) {
               orderObj.additionalCharges = quotDoc.additionalCharges;
             }
+            // Backfill glass & customFields from Quotation lineItems onto Order lineItems
+            if (Array.isArray(quotDoc.lineItems) && Array.isArray(orderObj.lineItems)) {
+              orderObj.lineItems = orderObj.lineItems.map((oi, idx) => {
+                const qi = quotDoc.lineItems[idx] || quotDoc.lineItems.find(q =>
+                  (q.templateId && oi.templateId && String(q.templateId) === String(oi.templateId)) ||
+                  (q.templateName && oi.templateName && q.templateName.toLowerCase() === oi.templateName.toLowerCase()) ||
+                  (q.name && oi.name && q.name.toLowerCase() === oi.name.toLowerCase())
+                );
+                const mergedCf = { ...(qi?.customFields || {}), ...(oi.customFields || {}) };
+                const resolvedGlass = extractGlassFromObj(oi) || extractGlassFromObj(qi) || '';
+                return {
+                  ...oi,
+                  customFields: Object.keys(mergedCf).length > 0 ? mergedCf : oi.customFields,
+                  glass: resolvedGlass || oi.glass || ''
+                };
+              });
+            }
           }
         }
       } catch (err) {
         console.warn('Failed to link quotation to order in card population:', err.message);
       }
+
+      // Backfill glass from order/quotation lineItems onto cardObj & measurements.groups/windows
+      try {
+        const srcItems = (Array.isArray(orderObj.lineItems) && orderObj.lineItems.length > 0)
+          ? orderObj.lineItems
+          : (Array.isArray(orderObj.quotation?.lineItems) ? orderObj.quotation.lineItems : []);
+        if (srcItems.length > 0) {
+          const normSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          const firstAnyGlass = srcItems.map(extractGlassFromObj).find(Boolean) || '';
+          if (!cardObj.glass && firstAnyGlass) {
+            cardObj.glass = firstAnyGlass;
+          }
+          if (cardObj.measurements && Array.isArray(cardObj.measurements.groups)) {
+            cardObj.measurements.groups = cardObj.measurements.groups.map((grp, gIdx) => {
+              const grpNameSlug = normSlug(grp.templateName || grp.templateCode);
+              const matchingItems = srcItems.filter(it => {
+                if (grp.templateId && it.templateId && String(grp.templateId) === String(it.templateId)) return true;
+                const itSlug = normSlug(it.templateName || it.name || it.templateCode || it.code);
+                return grpNameSlug && itSlug && (grpNameSlug === itSlug || grpNameSlug.includes(itSlug) || itSlug.includes(grpNameSlug));
+              });
+              const candidateItems = matchingItems.length > 0 ? matchingItems : srcItems;
+              const grpGlass = extractGlassFromObj(grp)
+                || candidateItems.map(extractGlassFromObj).find(Boolean)
+                || firstAnyGlass
+                || '';
+              const nextWindows = Array.isArray(grp.windows)
+                ? grp.windows.map((w, wIdx) => {
+                    const itemForWin = candidateItems[wIdx] || candidateItems[0];
+                    const wGlass = extractGlassFromObj(w) || extractGlassFromObj(itemForWin) || grpGlass;
+                    return wGlass ? { ...w, glass: wGlass } : w;
+                  })
+                : grp.windows;
+              return {
+                ...grp,
+                glass: grpGlass || grp.glass || '',
+                windows: nextWindows
+              };
+            });
+          } else if (cardObj.measurements && !cardObj.measurements.glass && firstAnyGlass) {
+            cardObj.measurements.glass = firstAnyGlass;
+          }
+        }
+      } catch (err) {}
 
       const party = orderObj.party;
       const partyName = typeof party === 'object' && party !== null
@@ -228,7 +307,8 @@ router.post('/cards/generate', async (req, res) => {
 
     // Run the Core Engineering Math Evaluator
     const orderNo = order.orderNumber || order.id || order._id?.toString() || '';
-    const engineOutput = await runEngine(order.templateId, order.lineItems, { orderNo });
+    const orderGlass = (order.lineItems || []).map(extractGlassFromObj).find(Boolean) || '';
+    const engineOutput = await runEngine(order.templateId, order.lineItems, { orderNo, glass: orderGlass });
 
     let templateDoc = null;
     try {
@@ -241,11 +321,13 @@ router.post('/cards/generate', async (req, res) => {
         templateName: templateDoc ? templateDoc.name : '',
         templateCode: templateDoc ? templateDoc.code : '',
         orderNo,
+        glass: orderGlass,
         windows: order.lineItems?.map((item, idx) => ({
           wNo: item.windowNo || `W${idx + 1}`,
           width: Number(item.measurements?.width || item.measurements?.widthMM || 0),
           height: Number(item.measurements?.height || item.measurements?.heightMM || 0),
-          qty: Number(item.qty) || 1
+          qty: Number(item.qty) || 1,
+          glass: extractGlassFromObj(item) || orderGlass
         })) || [],
         cuttingList: engineOutput.cuttingList || [],
         glassList: engineOutput.glassList || [],
@@ -440,13 +522,21 @@ router.post('/cards', async (req, res) => {
           qty: 1
         }];
 
+        const grpGlass = extractGlassFromObj(grp)
+          || grpWindows.map(extractGlassFromObj).find(Boolean)
+          || extractGlassFromObj(processedMeasurements)
+          || '';
+
         const lineItems = grpWindows.map((w, idx) => {
           const wWidth = Number(w.width || w.widthMM || w.Width || 0);
           const wHeight = Number(w.height || w.heightMM || w.Height || 0);
           const wQty = Number(w.qty || w.Qty || 1);
+          const wGlass = extractGlassFromObj(w) || grpGlass;
           return {
             windowNo: w.wNo || w.wno || `W${idx + 1}`,
             qty: wQty,
+            glass: wGlass,
+            customFields: w.customFields || (wGlass ? { GLASS: wGlass } : undefined),
             measurements: {
               ...cleanGrpInputs,
               width: wWidth,
@@ -457,7 +547,8 @@ router.post('/cards', async (req, res) => {
               'Height (mm)': wHeight,
               Width: wWidth,
               Height: wHeight,
-              qty: wQty
+              qty: wQty,
+              glass: wGlass
             }
           };
         });
@@ -470,9 +561,10 @@ router.post('/cards', async (req, res) => {
               height: Number(w.height || w.heightMM || w.Height || 0),
               qty: Number(w.qty || w.Qty || 1),
               wNo: w.wNo || w.wno || `W${idx + 1}`,
-              sourceLabel: w.wNo || w.wno || `W${idx + 1}`
+              sourceLabel: w.wNo || w.wno || `W${idx + 1}`,
+              glass: extractGlassFromObj(w) || grpGlass
             }));
-            const out = await runEngine(grpTemplate, lineItems, { orderNo: effectiveGrpOrderNo, windows: windowsPayload });
+            const out = await runEngine(grpTemplate, lineItems, { orderNo: effectiveGrpOrderNo, windows: windowsPayload, glass: grpGlass });
             if (out) {
               grp.cuttingList = out.cuttingList || [];
               grp.glassList = out.glassList || [];
@@ -480,6 +572,7 @@ router.post('/cards', async (req, res) => {
               grp.totalBomConsumption = out.totalBomConsumption || [];
               grp.sheetResult = out.sheetResult || null;
               grp.orderNo = effectiveGrpOrderNo;
+              if (grpGlass && !grp.glass) grp.glass = grpGlass;
               grp.results = grpWindows.map((w, i) => {
                 const fixFramItem = (out.cuttingList || []).find(c => (c.materialName || '').toLowerCase().includes('fram') || (c.materialName || '').toLowerCase().includes('casment'))
                   || (out.totalBomConsumption || []).find(b => (b.materialName || '').toLowerCase().includes('fram') || (b.materialName || '').toLowerCase().includes('casment'));

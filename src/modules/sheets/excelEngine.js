@@ -320,9 +320,24 @@ export async function runExcelEngine(template, payload = {}) {
     : new Date().toISOString().split('T')[0];
 
   const orderNo = payload.orderNo || 'ORD-SIM';
+  const pickGlassFromEntry = (entry) => {
+    if (!entry || typeof entry !== 'object') return '';
+    if (entry.glass && String(entry.glass).trim()) return String(entry.glass).trim();
+    if (entry.glassType && String(entry.glassType).trim()) return String(entry.glassType).trim();
+    if (entry.measurements?.glass && String(entry.measurements.glass).trim()) return String(entry.measurements.glass).trim();
+    if (entry.customFields && typeof entry.customFields === 'object') {
+      for (const k of Object.keys(entry.customFields)) {
+        if (/glass/i.test(k) && entry.customFields[k] && String(entry.customFields[k]).trim()) {
+          return String(entry.customFields[k]).trim();
+        }
+      }
+    }
+    return '';
+  };
   const glassVal = payload.glass
     || payload.glassType
-    || (payload.lineItems && (payload.lineItems[0]?.glass || payload.lineItems[0]?.customFields?.['GLASS'] || payload.lineItems[0]?.customFields?.['Glass Type'] || payload.lineItems[0]?.customFields?.['Glass'] || payload.lineItems[0]?.customFields?.['glass']))
+    || (Array.isArray(payload.lineItems) ? payload.lineItems.map(pickGlassFromEntry).find(Boolean) : '')
+    || (Array.isArray(payload.windows) ? payload.windows.map(pickGlassFromEntry).find(Boolean) : '')
     || '';
 
   // Inject date, order number and glass across all matching header cells in calculation sheet
@@ -558,6 +573,38 @@ function injectOrderNoCells(ws, orderNo) {
  * Injects glass specification into cells adjacent to "GLASS" labels and into
  * the "Type" column of any Glass Schedule table across a worksheet.
  */
+function isGlassSectionTitleRow(ws, decoded) {
+  const nextRow1Based = decoded.r + 2; // decoded.r is 0-based; row below is (decoded.r + 1) in 0-based = (decoded.r + 2) in 1-based
+  for (let c = Math.max(1, decoded.c - 1); c <= decoded.c + 6; c++) {
+    const belowCell = ws[columnToLetter(c) + nextRow1Based];
+    const belowText = String(belowCell?.v || '').trim();
+    if (/^(w\.?\s*no|width|height|nos|type|glass\s*type|sq\.?\s*ft)$/i.test(belowText)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolveRowGlass(payload, winIdx, fallbackGlass) {
+  const pick = (obj) => {
+    if (!obj || typeof obj !== 'object') return '';
+    if (obj.glass && String(obj.glass).trim()) return String(obj.glass).trim();
+    if (obj.glassType && String(obj.glassType).trim()) return String(obj.glassType).trim();
+    if (obj.measurements?.glass && String(obj.measurements.glass).trim()) return String(obj.measurements.glass).trim();
+    if (obj.customFields && typeof obj.customFields === 'object') {
+      for (const k of Object.keys(obj.customFields)) {
+        if (/glass/i.test(k) && obj.customFields[k] && String(obj.customFields[k]).trim()) {
+          return String(obj.customFields[k]).trim();
+        }
+      }
+    }
+    return '';
+  };
+  const lineItems = Array.isArray(payload.lineItems) ? payload.lineItems : [];
+  const winList = Array.isArray(payload.windows) ? payload.windows : [];
+  return pick(winList[winIdx]) || pick(lineItems[winIdx]) || fallbackGlass || '';
+}
+
 function injectGlassCells(ws, glassVal, payload = {}) {
   if (!glassVal || !ws) return;
   const glassRegex = /(^|[\s_])glass(\s*type)?([\s_:]|$)/i;
@@ -569,42 +616,53 @@ function injectGlassCells(ws, glassVal, payload = {}) {
     if (!cell || typeof cell.v !== 'string') continue;
     const text = cell.v.trim();
 
-    // 1. Label cell (e.g. "Glass" or "Glass Type" in header section)
+    // 1. Key-value Label cell (e.g. "Glass:" or "Glass Type:") — skip if it's a table section title above Width/Height/Type
     if (glassRegex.test(text) && !/(width|height|size|sqft|sq\.ft|nos|qty|cut|pane|thick|area|sched)/i.test(text)) {
       const decoded = XLSX.utils.decode_cell(addr);
-      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
-      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
-      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
-      const targetCell = ws[targetAddr];
+      if (!isGlassSectionTitleRow(ws, decoded)) {
+        const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+        const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+        const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+        const targetCell = ws[targetAddr];
 
-      if (!targetCell || !targetCell.f) {
-        ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
+        if (!targetCell || !targetCell.f) {
+          ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
+        }
       }
     }
 
-    // 2. Table Column Header: "Type" in a Glass Schedule section (e.g. S5 "Type" near Width/Height/Nos/Sq.ft)
+    // 2. Table Column Header: "Type" in a Glass Schedule section (e.g. S5 "Type" near W.no/Width/Height/Nos/Sq.ft)
     if (/^type$/i.test(text) || /^glass\s*type$/i.test(text)) {
       const decoded = XLSX.utils.decode_cell(addr);
-      const colLetter = columnToLetter(decoded.c + 1);
-      const lineItems = payload.lineItems || [];
+      const c1 = decoded.c + 1; // 1-based column index
+      const colLetter = columnToLetter(c1);
 
       for (let r = decoded.r + 2; r <= decoded.r + 30; r++) {
-        const rowFirstCell = ws['A' + r] || ws[columnToLetter(Math.max(1, decoded.c - 3)) + r];
-        const rowText = String(rowFirstCell?.v || '').toLowerCase();
-        if (rowText.includes('total') || rowText.includes('sum')) break;
-
-        const widthCell = ws[columnToLetter(decoded.c - 2) + r] || ws[columnToLetter(decoded.c - 3) + r];
-        const wNoCell = ws[columnToLetter(decoded.c - 4) + r] || ws['A' + r];
-        const hasRowData = (widthCell && widthCell.v && widthCell.v !== 0 && widthCell.v !== '0') ||
-                           (wNoCell && wNoCell.v && wNoCell.v !== '' && wNoCell.v !== 0);
+        let isTotalRow = false;
+        let hasRowData = false;
+        for (let cc = Math.max(1, c1 - 4); cc <= c1 + 1; cc++) {
+          const checkCell = ws[columnToLetter(cc) + r];
+          const rawV = checkCell?.v;
+          const strV = rawV !== undefined && rawV !== null ? String(rawV).trim() : '';
+          if (/\b(total|sum)\b/i.test(strV)) {
+            isTotalRow = true;
+            break;
+          }
+          if (cc < c1 && strV !== '' && strV !== '0' && strV !== '-') {
+            hasRowData = true;
+          }
+        }
+        if (isTotalRow) break;
 
         if (hasRowData) {
           const typeAddr = colLetter + r;
           const targetCell = ws[typeAddr];
           if (!targetCell || !targetCell.f) {
             const winIdx = (r - (decoded.r + 2));
-            const rowGlass = lineItems[winIdx]?.glass || lineItems[winIdx]?.customFields?.['GLASS'] || lineItems[winIdx]?.customFields?.['Glass Type'] || glassVal;
-            ws[typeAddr] = { t: 's', v: String(rowGlass), w: String(rowGlass) };
+            const rowGlass = resolveRowGlass(payload, winIdx, glassVal);
+            if (rowGlass) {
+              ws[typeAddr] = { t: 's', v: String(rowGlass), w: String(rowGlass) };
+            }
           }
         }
       }
@@ -653,37 +711,48 @@ function finalizeHeaderCells(ws, dateStr, orderNo, glassVal, payload = {}) {
 
     if (glassVal && glassRegex.test(text) && !/(width|height|size|sqft|sq\.ft|nos|qty|cut|pane|thick|area|sched)/i.test(text)) {
       const decoded = XLSX.utils.decode_cell(addr);
-      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
-      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
-      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
-      const target = ws[targetAddr];
-      if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
-        ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
+      if (!isGlassSectionTitleRow(ws, decoded)) {
+        const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+        const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+        const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+        const target = ws[targetAddr];
+        if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
+          ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
+        }
       }
     }
 
     if (glassVal && (/^type$/i.test(text) || /^glass\s*type$/i.test(text))) {
       const decoded = XLSX.utils.decode_cell(addr);
-      const colLetter = columnToLetter(decoded.c + 1);
-      const lineItems = payload.lineItems || [];
+      const c1 = decoded.c + 1; // 1-based column index
+      const colLetter = columnToLetter(c1);
 
       for (let r = decoded.r + 2; r <= decoded.r + 30; r++) {
-        const rowFirstCell = ws['A' + r] || ws[columnToLetter(Math.max(1, decoded.c - 3)) + r];
-        const rowText = String(rowFirstCell?.v || '').toLowerCase();
-        if (rowText.includes('total') || rowText.includes('sum')) break;
-
-        const widthCell = ws[columnToLetter(decoded.c - 2) + r] || ws[columnToLetter(decoded.c - 3) + r];
-        const wNoCell = ws[columnToLetter(decoded.c - 4) + r] || ws['A' + r];
-        const hasRowData = (widthCell && widthCell.v && widthCell.v !== 0 && widthCell.v !== '0') ||
-                           (wNoCell && wNoCell.v && wNoCell.v !== '' && wNoCell.v !== 0);
+        let isTotalRow = false;
+        let hasRowData = false;
+        for (let cc = Math.max(1, c1 - 4); cc <= c1 + 1; cc++) {
+          const checkCell = ws[columnToLetter(cc) + r];
+          const rawV = checkCell?.v;
+          const strV = rawV !== undefined && rawV !== null ? String(rawV).trim() : '';
+          if (/\b(total|sum)\b/i.test(strV)) {
+            isTotalRow = true;
+            break;
+          }
+          if (cc < c1 && strV !== '' && strV !== '0' && strV !== '-') {
+            hasRowData = true;
+          }
+        }
+        if (isTotalRow) break;
 
         if (hasRowData) {
           const typeAddr = colLetter + r;
           const target = ws[typeAddr];
           if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
             const winIdx = (r - (decoded.r + 2));
-            const rowGlass = lineItems[winIdx]?.glass || lineItems[winIdx]?.customFields?.['GLASS'] || lineItems[winIdx]?.customFields?.['Glass Type'] || glassVal;
-            ws[typeAddr] = { t: 's', v: String(rowGlass), w: String(rowGlass) };
+            const rowGlass = resolveRowGlass(payload, winIdx, glassVal);
+            if (rowGlass) {
+              ws[typeAddr] = { t: 's', v: String(rowGlass), w: String(rowGlass) };
+            }
           }
         }
       }
