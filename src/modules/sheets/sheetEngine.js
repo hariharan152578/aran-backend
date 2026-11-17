@@ -228,6 +228,7 @@ export async function runSheetEngine(template, payload = {}) {
         inputColumnsUsed: raw.inputColumnsUsed || null,
         durationMs: raw.durationMs || 0,
         defaultPrintPages,
+        customCellStyles: gs.customCellStyles || template.googleSheet?.customCellStyles || {},
         calculatedAt: new Date().toISOString()
       }
     };

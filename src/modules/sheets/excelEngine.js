@@ -454,6 +454,7 @@ export async function runExcelEngine(template, payload = {}) {
       },
       durationMs,
       defaultPrintPages,
+      customCellStyles: gs.customCellStyles || template.googleSheet?.customCellStyles || {},
       calculatedAt: new Date().toISOString()
     }
   };

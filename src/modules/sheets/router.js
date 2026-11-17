@@ -487,6 +487,32 @@ async function resolveSheetTemplate(idParam) {
   }
   if (!template) template = await Template.findOne({ code: idParam });
   if (!template) template = await Template.findOne({ name: idParam });
+  if (!template && typeof idParam === 'string') {
+    const escapeRegex = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+    template = await Template.findOne({ code: new RegExp(`^${escapeRegex(idParam)}$`, 'i') })
+      || await Template.findOne({ name: new RegExp(`^${escapeRegex(idParam)}$`, 'i') });
+  }
+  if (!template && typeof idParam === 'string') {
+    const clean = idParam.replace(/^(ex|gs)[-_:\s]+/i, '').trim();
+    const escapeRegex = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+    if (clean && clean !== idParam) {
+      template = await Template.findOne({ code: new RegExp(`^${escapeRegex(clean)}$`, 'i') })
+        || await Template.findOne({ name: new RegExp(`^${escapeRegex(clean)}$`, 'i') });
+    }
+  }
+  if (!template && typeof idParam === 'string') {
+    const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const targetSlug = normalize(idParam);
+    if (targetSlug.length >= 3) {
+      const allTemplates = await Template.find({});
+      template = allTemplates.find(t => {
+        const tNameSlug = normalize(t.name);
+        const tCodeSlug = normalize(t.code);
+        return (tNameSlug && (targetSlug === tNameSlug || targetSlug.includes(tNameSlug) || tNameSlug.includes(targetSlug)))
+          || (tCodeSlug && (targetSlug === tCodeSlug || targetSlug.includes(tCodeSlug) || tCodeSlug.includes(targetSlug)));
+      }) || null;
+    }
+  }
 
   if (!template) {
     throw Object.assign(new Error('Template not found.'), { status: 404, kind: 'NOT_FOUND' });

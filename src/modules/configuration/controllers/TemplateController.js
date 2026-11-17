@@ -55,6 +55,32 @@ export const getTemplateById = async (req, res) => {
       template = await Template.findOne({ code: id }).populate('categoryId subcategoryId folderId')
         || await Template.findOne({ name: id }).populate('categoryId subcategoryId folderId');
     }
+    if (!template && typeof id === 'string') {
+      const escapeRegex = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+      template = await Template.findOne({ code: new RegExp(`^${escapeRegex(id)}$`, 'i') }).populate('categoryId subcategoryId folderId')
+        || await Template.findOne({ name: new RegExp(`^${escapeRegex(id)}$`, 'i') }).populate('categoryId subcategoryId folderId');
+    }
+    if (!template && typeof id === 'string') {
+      const clean = id.replace(/^(ex|gs)[-_:\s]+/i, '').trim();
+      const escapeRegex = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+      if (clean && clean !== id) {
+        template = await Template.findOne({ code: new RegExp(`^${escapeRegex(clean)}$`, 'i') }).populate('categoryId subcategoryId folderId')
+          || await Template.findOne({ name: new RegExp(`^${escapeRegex(clean)}$`, 'i') }).populate('categoryId subcategoryId folderId');
+      }
+    }
+    if (!template && typeof id === 'string') {
+      const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const targetSlug = normalize(id);
+      if (targetSlug.length >= 3) {
+        const allTemplates = await Template.find({}).populate('categoryId subcategoryId folderId');
+        template = allTemplates.find(t => {
+          const tNameSlug = normalize(t.name);
+          const tCodeSlug = normalize(t.code);
+          return (tNameSlug && (targetSlug === tNameSlug || targetSlug.includes(tNameSlug) || tNameSlug.includes(targetSlug)))
+            || (tCodeSlug && (targetSlug === tCodeSlug || targetSlug.includes(tCodeSlug) || tCodeSlug.includes(targetSlug)));
+        }) || null;
+      }
+    }
     if (!template) return res.status(404).json({ message: 'Template not found' });
     res.json(template);
   } catch (error) {
