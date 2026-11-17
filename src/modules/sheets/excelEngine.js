@@ -616,18 +616,16 @@ function injectGlassCells(ws, glassVal, payload = {}) {
     if (!cell || typeof cell.v !== 'string') continue;
     const text = cell.v.trim();
 
-    // 1. Key-value Label cell (e.g. "Glass:" or "Glass Type:") — skip if it's a table section title above Width/Height/Type
+    // 1. Key-value Label cell (e.g. "Glass" or "Glass Type" in header section)
     if (glassRegex.test(text) && !/(width|height|size|sqft|sq\.ft|nos|qty|cut|pane|thick|area|sched)/i.test(text)) {
       const decoded = XLSX.utils.decode_cell(addr);
-      if (!isGlassSectionTitleRow(ws, decoded)) {
-        const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
-        const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
-        const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
-        const targetCell = ws[targetAddr];
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const targetCell = ws[targetAddr];
 
-        if (!targetCell || !targetCell.f) {
-          ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
-        }
+      if (!targetCell || !targetCell.f) {
+        ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
       }
     }
 
@@ -711,14 +709,12 @@ function finalizeHeaderCells(ws, dateStr, orderNo, glassVal, payload = {}) {
 
     if (glassVal && glassRegex.test(text) && !/(width|height|size|sqft|sq\.ft|nos|qty|cut|pane|thick|area|sched)/i.test(text)) {
       const decoded = XLSX.utils.decode_cell(addr);
-      if (!isGlassSectionTitleRow(ws, decoded)) {
-        const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
-        const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
-        const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
-        const target = ws[targetAddr];
-        if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
-          ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
-        }
+      const merge = merges.find(m => m.s.r === decoded.r && m.s.c === decoded.c);
+      const targetCol = merge ? (merge.e.c + 1) : (decoded.c + 1);
+      const targetAddr = XLSX.utils.encode_cell({ r: decoded.r, c: targetCol });
+      const target = ws[targetAddr];
+      if (!target || target.v === '' || target.v === 0 || target.v === '0' || target.v === null || target.v === undefined) {
+        ws[targetAddr] = { t: 's', v: String(glassVal), w: String(glassVal) };
       }
     }
 
