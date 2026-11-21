@@ -4,6 +4,7 @@ import Order from '../sales/models/Order.js';
 import Quotation from '../sales/models/Quotation.js';
 import ProductionCard from './models/ProductionCard.js';
 import Template from '../configuration/models/Template.js';
+import MasterCardSettings from './models/MasterCardSettings.js';
 import { runEngine } from '../calculation-engine/engineDispatcher.js';
 
 const router = express.Router();
@@ -286,6 +287,52 @@ const populateCard = async (card) => {
 
 router.get('/', (req, res) => {
   res.json({ message: 'Aran ERP: PRODUCTION module is active' });
+});
+
+// Master Card Global Configuration Settings (applied across all past & future cards)
+let inMemoryMasterCardSettings = {
+  key: 'global_master_card',
+  orientation: 'portrait',
+  fontSize: 11,
+  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  isBold: false,
+  isItalic: false,
+  scalePercent: 100,
+  cellPaddingMode: 'comfortable',
+  tableWidthMode: '100%'
+};
+
+router.get('/master-card-settings', async (req, res) => {
+  try {
+    if (mongoose.connection?.readyState === 1) {
+      let doc = await MasterCardSettings.findOne({ key: 'global_master_card' }).lean();
+      if (!doc) {
+        doc = await MasterCardSettings.create(inMemoryMasterCardSettings);
+      }
+      return res.json(doc);
+    }
+  } catch (err) {
+    console.warn('Error fetching MasterCardSettings from DB, falling back to in-memory:', err.message);
+  }
+  res.json(inMemoryMasterCardSettings);
+});
+
+router.put('/master-card-settings', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    inMemoryMasterCardSettings = { ...inMemoryMasterCardSettings, ...payload };
+    if (mongoose.connection?.readyState === 1) {
+      const updated = await MasterCardSettings.findOneAndUpdate(
+        { key: 'global_master_card' },
+        { $set: payload },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      ).lean();
+      return res.json(updated);
+    }
+  } catch (err) {
+    console.warn('Error updating MasterCardSettings in DB, falling back to in-memory:', err.message);
+  }
+  res.json(inMemoryMasterCardSettings);
 });
 
 // Endpoint to execute the Calculation Engine and generate a Production Card from an Order
