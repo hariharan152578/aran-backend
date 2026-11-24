@@ -17,6 +17,10 @@ const extractIdString = (id) => {
     if (mongoose.Types.ObjectId.isValid(id) || id.constructor?.name === 'ObjectId') {
       return id.toString();
     }
+    if (Buffer.isBuffer(id)) return id.toString('hex');
+    if (id.type === 'Buffer' && Array.isArray(id.data)) {
+      return Buffer.from(id.data).toString('hex');
+    }
     if (id._id) return extractIdString(id._id);
     if (id.id && typeof id.id === 'string') return id.id;
     return id.toString();
@@ -51,9 +55,18 @@ const populateCard = async (card) => {
   // Populate orderId
   if (card.orderId) {
     const rawOrderId = card.orderId;
-    const idKey = typeof rawOrderId === 'object' && rawOrderId !== null
-      ? (rawOrderId.id || rawOrderId._id || rawOrderId.orderNumber || '')
-      : String(rawOrderId || '');
+    let idKey = '';
+    if (typeof rawOrderId === 'object' && rawOrderId !== null) {
+      if (Buffer.isBuffer(rawOrderId)) {
+        idKey = rawOrderId.toString('hex');
+      } else if (rawOrderId.type === 'Buffer' && Array.isArray(rawOrderId.data)) {
+        idKey = Buffer.from(rawOrderId.data).toString('hex');
+      } else {
+        idKey = extractIdString(rawOrderId.id || rawOrderId._id || rawOrderId.orderNumber || '');
+      }
+    } else {
+      idKey = String(rawOrderId || '');
+    }
 
     let orderDoc = null;
     if (idKey) {
@@ -196,10 +209,11 @@ const populateCard = async (card) => {
         createdAt: rawOrderId.createdAt || card.createdAt
       };
     } else {
+      const cleanOid = extractIdString(rawOrderId);
       cardObj.orderId = {
-        _id: String(rawOrderId),
-        id: String(rawOrderId),
-        customerName: card.customerName || 'Local/Custom Customer',
+        _id: cleanOid,
+        id: cleanOid && cleanOid.length === 24 ? `ORD-${cleanOid.slice(-4).toUpperCase()}` : (cleanOid || 'Order'),
+        customerName: card.customerName || 'Customer',
         projectName: card.projectName || 'Custom Project',
         status: 'Active',
         totalAmount: 0,
@@ -207,9 +221,18 @@ const populateCard = async (card) => {
       };
     }
 
-    const resolvedOrderNo = card.orderNo || cardObj.orderId?.id || cardObj.orderId?.orderNumber || cardObj.orderId?.orderNo || '';
+    let resolvedOrderNo = card.orderNo;
+    if (!resolvedOrderNo || typeof resolvedOrderNo !== 'string' || resolvedOrderNo.includes('"type":"Buffer"') || resolvedOrderNo.includes('{"type":')) {
+      resolvedOrderNo = cardObj.orderId?.id || cardObj.orderId?.orderNumber || cardObj.orderId?.orderNo || '';
+    }
+    if (!resolvedOrderNo || /^[0-9a-fA-F]{24}$/.test(resolvedOrderNo)) {
+      resolvedOrderNo = cardObj.orderId?.orderNumber || cardObj.orderId?.id || (resolvedOrderNo ? `ORD-${resolvedOrderNo.slice(-4).toUpperCase()}` : 'Order');
+    }
     cardObj.orderNo = resolvedOrderNo;
     cardObj.orderNumber = cardObj.orderId?.orderNumber || resolvedOrderNo;
+    if (!cardObj.customerName || typeof cardObj.customerName !== 'string' || cardObj.customerName.includes('"type":"Buffer"')) {
+      cardObj.customerName = cardObj.orderId?.customerName || 'Customer';
+    }
   }
 
   // Populate templateId
