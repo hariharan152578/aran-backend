@@ -669,6 +669,9 @@ router.post('/cards', async (req, res) => {
       }
     }
 
+    const rawProdDate = req.body.productionDate || req.body.scheduledDate;
+    const finalProductionDate = rawProdDate ? new Date(rawProdDate) : new Date();
+
     const card = new ProductionCard({
       orderId,
       orderNo: cardOrderNo,
@@ -680,7 +683,7 @@ router.post('/cards', async (req, res) => {
       priority: priority || 'Normal',
       notes: notes || '',
       status: status || 'Created',
-      productionDate: new Date(),
+      productionDate: finalProductionDate,
       measurements: processedMeasurements,
       cuttingList: cuttingListRes,
       glassList: glassListRes,
@@ -695,6 +698,8 @@ router.post('/cards', async (req, res) => {
         const order = await Order.findById(orderId);
         if (order) {
           order.status = 'In Production';
+          order.productionDate = finalProductionDate;
+          order.scheduledDate = finalProductionDate;
           await order.save();
         }
       } catch (err) {
@@ -790,6 +795,48 @@ router.patch('/cards/:id/status', async (req, res) => {
     res.json(populatedCard);
   } catch (error) {
     console.error('Error updating production card status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reschedule Production Card date, notes, and priority
+router.patch('/cards/:id/reschedule', async (req, res) => {
+  try {
+    const { productionDate, notes, priority } = req.body;
+    if (!productionDate) {
+      return res.status(400).json({ error: 'productionDate is required' });
+    }
+    const targetDate = new Date(productionDate);
+    const update = { productionDate: targetDate };
+    if (notes !== undefined) update.notes = notes;
+    if (priority !== undefined) update.priority = priority;
+
+    const card = await ProductionCard.findByIdAndUpdate(
+      req.params.id,
+      { $set: update },
+      { new: true }
+    );
+    if (!card) return res.status(404).json({ error: 'Card not found' });
+
+    // Sync to Order if present
+    if (card.orderId) {
+      try {
+        const oId = typeof card.orderId === 'object' ? (card.orderId._id || card.orderId.id) : card.orderId;
+        if (oId) {
+          const query = mongoose.Types.ObjectId.isValid(oId)
+            ? { $or: [{ _id: oId }, { id: oId }, { orderNumber: oId }] }
+            : { $or: [{ id: oId }, { orderNumber: oId }] };
+          await Order.findOneAndUpdate(query, { $set: { productionDate: targetDate, scheduledDate: targetDate } });
+        }
+      } catch (e) {
+        console.warn('Syncing scheduledDate to Order failed:', e.message);
+      }
+    }
+
+    const populatedCard = await populateCard(card);
+    res.json({ message: 'Production card rescheduled successfully', card: populatedCard });
+  } catch (error) {
+    console.error('Error rescheduling card:', error);
     res.status(500).json({ error: error.message });
   }
 });

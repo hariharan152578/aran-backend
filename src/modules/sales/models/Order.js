@@ -10,6 +10,8 @@ const OrderSchema = new mongoose.Schema({
   quotationRef: { type: String },
   quotationDate: { type: Date },
   productionCardNo: { type: String },
+  productionDate: { type: Date },
+  scheduledDate: { type: Date },
   employee: { type: String, default: '' },
   followedBy: { type: String, default: '' },
   date: { type: String }, // Frontend usually stores locale string
